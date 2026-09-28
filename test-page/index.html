@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>finfinity.co.in — sample page hosting the loan chat widget</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 720px; margin: 60px auto; padding: 0 20px; color: #1B2B27; }
+  h1 { font-size: 22px; }
+  /* Dev-only control — never ships with the real widget embed, just this local test page. */
+  #admin-bar { margin-top: 24px; padding: 10px 14px; border: 1px dashed #999; border-radius: 8px; font-size: 13px; color: #555; }
+  #admin-bar button { font-size: 13px; padding: 4px 10px; cursor: pointer; }
+</style>
+</head>
+<body>
+  <h1>finfinity — Home Loans</h1>
+  <p>This is a stand-in for a real website page. The loan eligibility chat widget below is embedded via a single script tag — click the round button in the bottom-right corner to open it.</p>
+
+  <div id="admin-bar">
+    <strong>Admin (this test page only):</strong>
+    the widget remembers a verified mobile+OTP for 10 minutes so re-checking eligibility skips both —
+    use this to test a <em>different</em> customer without waiting that out.
+    <br />
+    <button id="admin-new-customer">Start fresh (new customer)</button>
+  </div>
+
+  <script src="./widget.js" data-api-base="http://localhost:8091" defer></script>
+  <script>
+    // Clears the widget's own remembered-identity + session tokens (see widget/src/app.ts's
+    // IDENTITY_STORAGE_KEY/STORAGE_KEY) and reloads — a totally blank slate, asking for mobile+OTP
+    // again regardless of how recently one was verified. Real customers never see this button.
+    document.getElementById('admin-new-customer').onclick = () => {
+      localStorage.removeItem('lc_identity_token_v1');
+      localStorage.removeItem('lc_session_token_v1');
+      location.reload();
+    };
+  </script>
+</body>
+</html>

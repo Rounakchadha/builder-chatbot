@@ -1,0 +1,17 @@
+{
+  "name": "loan-chatbot",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "shared",
+    "server",
+    "widget"
+  ],
+  "scripts": {
+    "dev:server": "npm run dev --workspace server",
+    "dev:widget": "npm run dev --workspace widget",
+    "build": "npm run build --workspace shared && npm run build --workspace server && npm run build --workspace widget",
+    "test": "npm run test --workspace server",
+    "docker:up": "docker-compose up --build"
+  }
+}

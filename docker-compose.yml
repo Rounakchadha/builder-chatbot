@@ -1,0 +1,55 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: loanbot
+      POSTGRES_PASSWORD: loanbot
+      POSTGRES_DB: loanbot_v1
+    ports:
+      - '5435:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U loanbot']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - '6381:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - server/.env
+    environment:
+      DATABASE_URL: postgresql://loanbot:loanbot@postgres:5432/loanbot_v1
+      REDIS_URL: redis://redis:6379
+      PORT: '8080'
+      # TEMPORARY UAT-testing-only workaround (2026-09-24): this server's own network path to
+      # backend.uatfinfinity.in goes through something (a hosting-provider/corporate proxy, most
+      # likely) presenting a self-signed certificate Node doesn't trust, which blocks every real
+      # API call with "self-signed certificate in certificate chain". This disables TLS certificate
+      # verification for the whole container so testing isn't blocked. Do NOT carry this into
+      # production or once real customer PII is flowing — the proper fix is adding whatever CA
+      # certificate is actually doing the interception to the container's trusted store instead.
+      NODE_TLS_REJECT_UNAUTHORIZED: '0'
+    ports:
+      - '8091:8080'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  pgdata:

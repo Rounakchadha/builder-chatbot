@@ -1,0 +1,119 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// One chat session = one visitor's attempt at the flow. Anonymous until
+/// mobile is verified; may never be tied to a real identity (no-PAN path).
+model Conversation {
+  id            String   @id @default(uuid())
+  sessionToken  String   @unique
+  flowId        String // e.g. "home_loan_v1" — which flow config drove this session
+  currentStepId String?
+  mobileHash    String? // HMAC of verified mobile, never plaintext
+  mobileMasked  String? // e.g. "9876X XXXX0", safe to display/log
+  customerId    String? // set once the dedupe check matches, or a new Customer is created
+  customer      Customer? @relation(fields: [customerId], references: [id])
+  panConsent    Boolean?
+  status        String   @default("in_progress") // in_progress | completed | abandoned
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  messages      Message[]
+  answers       FlowAnswer[]
+  lead          Lead?
+  consentEvents ConsentAudit[]
+
+  @@index([mobileHash])
+  @@index([status])
+}
+
+/// A known, deduped identity — the record the Dedupe API is checked against on every new
+/// conversation (by mobileHash), and the record a not-yet-known customer gets created into once
+/// PAN + bureau consent are collected. Distinct from Lead: a Customer can exist (and be reused
+/// across multiple conversations/loan applications over time) with no Lead ever created for them.
+model Customer {
+  id            String   @id @default(uuid())
+  mobileHash    String   @unique
+  mobileMasked  String
+  panEncrypted  String? // AES-256-GCM ciphertext, never plaintext
+  panMasked     String?
+  nameEncrypted String?
+  dob           String?
+  email         String?
+  pincode       String?
+  segment       String?
+  creditScore   Int?
+  bureauSource  String? // "bureau" | "experian" — which pull last populated creditScore
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  conversations Conversation[]
+}
+
+/// Full transcript, for RM/analyst visibility and LLM context windowing.
+model Message {
+  id             String       @id @default(uuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id])
+  role           String // bot | user | system
+  stepId         String?
+  text           String
+  createdAt      DateTime     @default(now())
+
+  @@index([conversationId, createdAt])
+}
+
+/// Slot store — the source of truth for collected answers, keyed by step id.
+/// Deliberately separate from Message so the flow engine never has to parse
+/// free-text chat history to know what it already knows.
+model FlowAnswer {
+  id             String       @id @default(uuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id])
+  stepId         String
+  value          Json
+  createdAt      DateTime     @default(now())
+
+  @@unique([conversationId, stepId])
+}
+
+/// Created only when panConsent = true AND the CIBIL pull succeeds.
+model Lead {
+  id                String       @id @default(uuid())
+  conversationId    String       @unique
+  conversation      Conversation @relation(fields: [conversationId], references: [id])
+  panEncrypted      String // AES-256-GCM ciphertext, never plaintext
+  panMasked         String // e.g. "ABCDE****F"
+  nameEncrypted     String?
+  creditScore       Int?
+  builderLeadId     String? // id returned by the Builder module once wired up
+  builderSyncStatus String       @default("pending") // pending | synced | failed
+  createdAt         DateTime     @default(now())
+}
+
+/// Immutable record of every PAN-consent decision, for compliance.
+model ConsentAudit {
+  id             String       @id @default(uuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id])
+  decision       Boolean
+  ipAddress      String
+  userAgent      String?
+  createdAt      DateTime     @default(now())
+}
+
+/// Curated FAQ knowledge base for the RAG-grounded FAQ answers. Embeddings
+/// are stored as a float array; a pgvector column is added via raw SQL
+/// migration (see migrations/) since Prisma doesn't model `vector` natively.
+model KnowledgeChunk {
+  id        String   @id @default(uuid())
+  topic     String // e.g. "foir", "emi", "home_loan_basics"
+  content   String
+  version   Int      @default(1)
+  createdAt DateTime @default(now())
+}
