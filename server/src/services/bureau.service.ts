@@ -92,6 +92,10 @@ interface ValidateBureauResponse {
 }
 
 export const realBureauApi: RealBureauApi = {
+  // retryOnTransient: false throughout — generatebureau starts a real bureau session (CIBIL
+  // question or Experian OTP) and validatebureau consumes an answer/OTP attempt against it;
+  // retrying either blind after a timeout risks starting a duplicate session or burning a real
+  // attempt for an answer that might have already gone through.
   async generateBureau(input) {
     return finfinityClient
       .post<GenerateBureauResponse[]>(
@@ -103,7 +107,7 @@ export const realBureauApi: RealBureauApi = {
           pincode: input.pincode,
           applicant_type_key: input.applicantTypeKey,
         },
-        { token: input.token },
+        { token: input.token, retryOnTransient: false },
       )
       .then((results) => {
         const result = results[0];
@@ -123,7 +127,7 @@ export const realBureauApi: RealBureauApi = {
         answerKey: input.answerKey,
         ChallengeConfigGUID: input.challengeConfigGuid,
       },
-      { token: input.token },
+      { token: input.token, retryOnTransient: false },
     );
     return { creditScore: results[0].bureauScore, source: 'bureau', accessToken: results[1]?.access, refreshToken: results[1]?.refresh };
   },
@@ -137,7 +141,7 @@ export const realBureauApi: RealBureauApi = {
         phone_number: input.phoneNumber,
         otp: input.otp,
       },
-      { token: input.token },
+      { token: input.token, retryOnTransient: false },
     );
     return { creditScore: results[0].bureauScore, source: 'experian', accessToken: results[1]?.access, refreshToken: results[1]?.refresh };
   },

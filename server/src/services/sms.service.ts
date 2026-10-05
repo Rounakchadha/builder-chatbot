@@ -143,7 +143,8 @@ interface ValidateOtpTokenPair {
 class RealSmsService implements SmsService {
   async sendOtp(conversationId: string, mobile: string): Promise<void> {
     await enforceOtpMobileRateLimit(mobile);
-    await finfinityClient.post<GenerateOtpResponse[]>('/leadflow/generateotpv2', { recipient: mobile });
+    // retryOnTransient: false — a retry here would risk sending a second real SMS for one customer action.
+    await finfinityClient.post<GenerateOtpResponse[]>('/leadflow/generateotpv2', { recipient: mobile }, { retryOnTransient: false });
     // validateotpv2 needs the recipient again, but our verifyOtp signature only gets the code —
     // stash it here rather than threading mobile through every OTP step's onAnswer.
     await redis.set(otpMobileKey(conversationId), mobile, 'EX', OTP_TTL_SECONDS);
@@ -154,11 +155,13 @@ class RealSmsService implements SmsService {
     if (!mobile) throw new Error('otp_locked'); // no OTP was ever sent for this conversation/step
 
     try {
-      const results = await finfinityClient.post<[ValidateOtpResponse, ValidateOtpTokenPair?]>('/leadflow/validateotpv2', {
-        recipient: mobile,
-        otp: code,
-        creation_type: 'MOBILE',
-      });
+      // retryOnTransient: false — retrying blind risks burning a real attempt against the
+      // account's own lockout counter for an answer we might genuinely already have.
+      const results = await finfinityClient.post<[ValidateOtpResponse, ValidateOtpTokenPair?]>(
+        '/leadflow/validateotpv2',
+        { recipient: mobile, otp: code, creation_type: 'MOBILE' },
+        { retryOnTransient: false },
+      );
       const first = results[0];
       // Prefer the nested `token` (already-known-customer shape); fall back to the second array
       // element (brand-new-customer shape) when it's not there.

@@ -203,7 +203,12 @@ function buildProfileSummary(ctx: StepContext): string {
  * actually used once FINFINITY_OFFERS_ENABLED is on (see eligibility.service.ts); the local
  * formula ignores it. Without a PAN (the self-declared-score path), no lead can ever exist, so
  * that path always stays on the local formula regardless of the flag. */
-async function computeEligibilityPayload(ctx: StepContext, previous?: EligibilityResultPayload, builderLeadId?: string): Promise<EligibilityResultPayload> {
+async function computeEligibilityPayload(
+  ctx: StepContext,
+  previous?: EligibilityResultPayload,
+  builderLeadId?: string,
+  realRm?: { name: string; phone: string; email: string },
+): Promise<EligibilityResultPayload> {
   const a = ctx.answers;
   const segment = a.segment as string;
   const product = a.product as string;
@@ -250,7 +255,9 @@ async function computeEligibilityPayload(ctx: StepContext, previous?: Eligibilit
     financialEligibilityLakh,
     propertyCappedEligibilityLakh,
     offers: outcome.offers,
-    rm: previous?.rm ?? pickRm(seedKey),
+    // Real one Finfinity actually assigned wins over anything previously computed or placeholder —
+    // previous.rm only ever held a placeholder in the first place if no real one had come back yet.
+    rm: realRm ?? previous?.rm ?? pickRm(seedKey),
     leadId: previous?.leadId ?? generateLeadId(),
     leadCreated: previous?.leadCreated ?? false,
   };
@@ -272,7 +279,7 @@ async function ensureLead(
   ctx: StepContext,
   info: { pan: string; name?: string; creditScore?: number; product: string; loanType: string },
   opts?: { syncFullProfile?: boolean },
-): Promise<{ builderLeadId: string | null }> {
+): Promise<{ builderLeadId: string | null; rm?: { name: string; phone: string; email: string } }> {
   const result = await leadService.createLead({
     conversationId: ctx.conversationId,
     panMasked: maskPan(info.pan),
@@ -300,7 +307,7 @@ async function ensureLead(
     await syncLeadFinancials(ctx, result.builderLeadId, info.pan, info.loanType);
   }
 
-  return { builderLeadId: result.builderLeadId };
+  return { builderLeadId: result.builderLeadId, rm: result.rm };
 }
 
 /** Pushes the customer's current profile + loan financials onto an already-created real lead —
@@ -313,13 +320,16 @@ async function syncLeadFinancials(ctx: StepContext, leadId: string, pan: string,
   const a = ctx.answers;
   const token = a.finfinityAccessToken as string | undefined;
 
-  const [customerResult, leadResult] = await Promise.allSettled([
-    dedupeService.updateCustomer(
-      a.remoteCustomerId as number | undefined,
-      { pan, email: a.email as string | undefined, pincode: a.pincode as string | undefined, segment: a.segment as string | undefined },
-      token,
-    ),
-    leadService.updateLead(
+  // updateCustomer only affects the CUSTOMER record (PAN/email/pincode/segment) — the getoffers
+  // call right after this never reads any of that, only the LEAD's own income/EMI (which
+  // updateLead sets). So it runs in the background rather than something the customer has to wait
+  // on: kicked off here, logged if it fails, never blocking the path to eligibility.
+  dedupeService
+    .updateCustomer(a.remoteCustomerId as number | undefined, { pan, email: a.email as string | undefined, pincode: a.pincode as string | undefined, segment: a.segment as string | undefined }, token)
+    .catch((err) => logger.error({ err, conversationId: ctx.conversationId }, 'updateCustomer sync failed — continuing without it'));
+
+  try {
+    await leadService.updateLead(
       leadId,
       {
         loanType,
@@ -332,13 +342,9 @@ async function syncLeadFinancials(ctx: StepContext, leadId: string, pan: string,
         propertyValue: a.propertyValue as number | undefined,
       },
       token,
-    ),
-  ]);
-  if (customerResult.status === 'rejected') {
-    logger.error({ err: customerResult.reason, conversationId: ctx.conversationId }, 'updateCustomer sync failed — continuing without it');
-  }
-  if (leadResult.status === 'rejected') {
-    logger.error({ err: leadResult.reason, conversationId: ctx.conversationId }, 'updateLead sync failed — continuing without it');
+    );
+  } catch (err) {
+    logger.error({ err, conversationId: ctx.conversationId }, 'updateLead sync failed — continuing without it');
   }
 }
 
@@ -351,9 +357,20 @@ export async function createLeadFromResult(
   base: EligibilityResultPayload,
   info: { pan: string; name?: string; creditScore?: number },
 ): Promise<EligibilityResultPayload> {
-  await ensureLead(ctx, { ...info, product: base.product, loanType: base.loanType });
-  return { ...base, leadCreated: true };
+  const lead = await ensureLead(ctx, { ...info, product: base.product, loanType: base.loanType });
+  // base.rm was only ever a placeholder up to now — no lead existed yet to have a real one
+  // assigned against. Swap it in if create_anacity_lead just handed one back.
+  return { ...base, rm: lead.rm ?? base.rm, leadCreated: true };
 }
+
+/** Kicked off as soon as 'profileSummary' is reached (the recap right before 'result') instead of
+ * waiting for the customer to click past it — the real work here (create a lead, sync income/EMI,
+ * ask for lender offers) is the single slowest thing in the whole conversation, so starting it a
+ * step earlier means 'result' often finds it already done, or closer to done, instead of starting
+ * from zero. Keyed by conversationId; single-process only — if this ever runs as multiple server
+ * instances behind a load balancer, a miss here just falls back to computing fresh in 'result'
+ * (correct either way, just loses the head start on a miss). */
+const inFlightResults = new Map<string, Promise<EligibilityResultPayload>>();
 
 /** Called once, on first arrival at the 'result' step. When a PAN is already on file, the lead is
  * created FIRST and its real id is handed to computeEligibilityPayload — the real getcustomeroffers
@@ -365,6 +382,7 @@ export async function computeResultPayload(ctx: StepContext): Promise<Eligibilit
   const pan = a.pan as string | undefined;
 
   let builderLeadId: string | undefined;
+  let realRm: { name: string; phone: string; email: string } | undefined;
   if (pan) {
     const lead = await ensureLead(
       ctx,
@@ -378,9 +396,10 @@ export async function computeResultPayload(ctx: StepContext): Promise<Eligibilit
       { syncFullProfile: true },
     );
     builderLeadId = lead.builderLeadId ?? undefined;
+    realRm = lead.rm;
   }
 
-  const base = await computeEligibilityPayload(ctx, undefined, builderLeadId);
+  const base = await computeEligibilityPayload(ctx, undefined, builderLeadId, realRm);
   if (pan) base.leadCreated = true;
 
   await prisma.conversation.update({ where: { id: ctx.conversationId }, data: { status: 'completed' } });
@@ -391,9 +410,8 @@ export async function computeResultPayload(ctx: StepContext): Promise<Eligibilit
 /** Re-runs just the eligibility math after a post-result profile edit (e.g. income corrected from
  * the side panel) — never touches lead creation or conversation status again. Looks the lead back
  * up (rather than creating a new one) so a real getcustomeroffers recompute asks the same lead for
- * updated offers — note this asks the real backend for the SAME lead's offers again; it does not
- * push the edited answer (e.g. the corrected income) to the backend first, so until that's also
- * wired in, a real recompute may still reflect the lead's original numbers. */
+ * updated offers — pushes whatever just changed onto that lead first (see syncLeadFinancials below)
+ * so the recompute actually reflects the edit instead of the lead's original numbers. */
 export async function recomputeEligibility(ctx: StepContext, previous: EligibilityResultPayload): Promise<EligibilityResultPayload> {
   const pan = ctx.answers.pan as string | undefined;
   let builderLeadId: string | undefined;
@@ -641,10 +659,11 @@ export const homeLoanFlow: FlowDefinition = {
           await prisma.conversation.update({ where: { id: ctx.conversationId }, data: { customerId: match.customerId } });
         }
 
-        // searchcustomer's real response never includes a credit score at all — the only way we'd
-        // already know one for a real customer is if we cached it ourselves on a PREVIOUS
-        // eligibility check (see bureauFetchFound). Found here means the bureau-consent OTP gets
-        // skipped entirely below; not found just means the customer verifies it fresh, same as ever.
+        // searchcustomer's real response now includes whatever bureau score is already on file
+        // (see dedupe.service.ts) — falling back to our own cache only covers the mock and any
+        // real customer searchcustomer doesn't have a score for yet. Found here means the
+        // bureau-consent OTP gets skipped entirely below; not found just means the customer
+        // verifies it fresh, same as ever.
         let creditScore = match.creditScore;
         if (!creditScore) {
           const cached = await customerService.findCachedBureauScore(hmacLookup(ctx.answers.mobile as string));
@@ -662,6 +681,13 @@ export const homeLoanFlow: FlowDefinition = {
           pincode: match.pincode,
           segment: match.segment,
           creditScore,
+          // Captured for later — not yet acted on anywhere in the flow (still deciding how
+          // needsBureauRefresh/needsBureauConsent should change behavior; see DedupeMatch's doc
+          // comment in dedupe.service.ts).
+          bureauSource: match.bureauSource,
+          bureauFetchDate: match.bureauFetchDate,
+          needsBureauRefresh: match.needsBureauRefresh,
+          needsBureauConsent: match.needsBureauConsent,
         };
       },
     },
@@ -1158,7 +1184,8 @@ export const homeLoanFlow: FlowDefinition = {
       isApplicable: (ctx) => ctx.answers.dedupeFound === false,
       botMessage: (ctx) => {
         const a = ctx.answers;
-        const lines = [`<strong>Name:</strong> ${escapeHtml(a.name as string)}`];
+        const displayName = (a.fullName as string | undefined) ?? (a.name as string);
+        const lines = [`<strong>Name:</strong> ${escapeHtml(displayName)}`];
         if (a.dob) lines.push(`<strong>DOB:</strong> ${formatDob(a.dob as string)} (age ${calcAge(a.dob as string)})`);
         if (a.pincode) lines.push(`<strong>Pincode:</strong> ${a.pincode}`);
         lines.push(`<strong>CIBIL score:</strong> ${a.creditScore}`);
@@ -1171,7 +1198,17 @@ export const homeLoanFlow: FlowDefinition = {
           pincode: ctx.answers.pincode as string | undefined,
           email: ctx.answers.email as string | undefined,
         });
-        return { creditScore: pull.creditScore, bureauSource: pull.source };
+        // Replaces the masked name panFetch showed with the real one, now that both OTPs
+        // (identity, then bureau consent) are cleared — same bar the dedupe-found branch clears
+        // with just its one OTP before ever storing the real name. Updating the actual answers.name
+        // value (not just a display-time swap in botMessage above) means everything that reads it
+        // downstream — the profile sidebar, the result card — picks up the real name too, not just
+        // this one chat bubble.
+        return {
+          creditScore: pull.creditScore,
+          bureauSource: pull.source,
+          ...(ctx.answers.fullName ? { name: ctx.answers.fullName } : {}),
+        };
       },
     },
     {
@@ -1343,6 +1380,16 @@ export const homeLoanFlow: FlowDefinition = {
       isApplicable: (ctx) => isEligibilityIntent(ctx.answers),
       botMessage: (ctx) => buildProfileSummary(ctx),
       input: () => ({ type: 'none' }),
+      onAnswer: async (_parsed, ctx) => {
+        // Start the real lead-creation + offers work now, in the background — not awaited, so
+        // this step still renders immediately. 'result' picks up whatever this produces.
+        if (!inFlightResults.has(ctx.conversationId)) {
+          const promise = computeResultPayload(ctx);
+          promise.catch(() => {}); // avoid an unhandled-rejection warning if the customer never reaches 'result' to await it
+          inFlightResults.set(ctx.conversationId, promise);
+          setTimeout(() => inFlightResults.delete(ctx.conversationId), 2 * 60 * 1000).unref();
+        }
+      },
     },
     {
       id: 'result',
@@ -1350,18 +1397,22 @@ export const homeLoanFlow: FlowDefinition = {
       progressLabel: 'Your eligibility',
       botMessage: (ctx) => {
         if (!isEligibilityIntent(ctx.answers)) return (ctx.answers.statusMessage as string) ?? 'Checking your application status…';
-        // Only use the real first name once identity has actually been OTP-confirmed (the
-        // dedupe-found branch) — the not-found branch never verifies OTP, so it only ever gets
-        // the masked name, same as panFetch's message.
-        if (ctx.answers.dedupeFound === true) return `Here's your loan eligibility, ${firstName(ctx)}.`;
-        return ctx.answers.name ? `Here's your loan eligibility for ${escapeHtml(ctx.answers.name as string)}.` : "Here's your loan eligibility.";
+        // By 'result', both branches have cleared identity OTP + bureau-consent OTP — the real
+        // first name (firstName() prefers fullName over the masked name) is fair to show either way.
+        if (ctx.answers.name || ctx.answers.fullName) return `Here's your loan eligibility, ${firstName(ctx)}.`;
+        return "Here's your loan eligibility.";
       },
       input: () => ({ type: 'none' }),
       onAnswer: async (_parsed, ctx) => {
         // statusMessage is already set by fetchApplicationStatus above for the non-eligibility
         // (existing-application) intent — nothing further to compute here for that case.
         if (!isEligibilityIntent(ctx.answers)) return undefined;
-        const resultPayload = await computeResultPayload(ctx);
+        // profileSummary already started this in the background — usually already done (or
+        // closer to done) by the time we get here. Falls back to computing fresh on a miss (a
+        // resumed session, a multi-instance deploy, or the 2-minute cache window having lapsed).
+        const pending = inFlightResults.get(ctx.conversationId);
+        inFlightResults.delete(ctx.conversationId);
+        const resultPayload = pending ? await pending : await computeResultPayload(ctx);
         return { resultPayload };
       },
     },

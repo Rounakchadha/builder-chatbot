@@ -21,6 +21,10 @@ export interface LeadProfile {
 export interface LeadSyncResult {
   builderLeadId: string | null;
   status: 'synced' | 'failed' | 'pending';
+  /** The real relationship manager Finfinity actually assigned to this lead — returned right in
+   * create_anacity_lead's own response. Only ever set by the real service; the mock leaves this
+   * undefined so the flow's placeholder RM (see flows/rm.ts's pickRm) still applies there. */
+  rm?: { name: string; phone: string; email: string };
 }
 
 /** Everything updatelead accepts — the fields getcustomeroffers actually needs to compute a real
@@ -84,6 +88,11 @@ interface CreateLeadResponse {
   leadid: number;
   customer_id: number;
   product_code: string;
+  // Confirmed live (2026-09-29): create_anacity_lead assigns a real relationship manager right
+  // away and hands their details back in this same response.
+  rm_name?: string;
+  rm_email?: string;
+  rm_mobile_number?: string;
 }
 
 /** Real Lead-creation API — POST /leadflow/create_anacity_lead. Needs the real backend's own
@@ -97,6 +106,8 @@ class RealLeadService implements LeadService {
     const productCode = PRODUCT_CODE[profile.product];
     if (!productCode) throw new Error(`createLead: no product_code mapping for "${profile.product}"`);
 
+    // retryOnTransient: false — this creates a brand-new lead every call; retrying blind after a
+    // timeout risks creating a second real lead if the first request actually landed.
     const results = await finfinityClient.post<CreateLeadResponse[]>(
       '/leadflow/create_anacity_lead',
       {
@@ -104,12 +115,18 @@ class RealLeadService implements LeadService {
         product_code: productCode,
         campaign_code: CAMPAIGN_CODE,
       },
-      { token: profile.token },
+      { token: profile.token, retryOnTransient: false },
     );
     const lead = results[0];
     if (!lead) throw new Error('create_anacity_lead returned no data');
 
-    return { builderLeadId: String(lead.leadid), status: 'synced' };
+    // Raw 10-digit, no country code or spacing — formatted to match the same "+91 XXXXX XXXXX"
+    // style the placeholder RM list already used, so a real RM doesn't look inconsistent.
+    const rmPhone = lead.rm_mobile_number && /^\d{10}$/.test(lead.rm_mobile_number)
+      ? `+91 ${lead.rm_mobile_number.slice(0, 5)} ${lead.rm_mobile_number.slice(5)}`
+      : lead.rm_mobile_number;
+    const rm = lead.rm_name && lead.rm_email && rmPhone ? { name: lead.rm_name, email: lead.rm_email, phone: rmPhone } : undefined;
+    return { builderLeadId: String(lead.leadid), status: 'synced', rm };
   }
 
   /** Real API — POST /leadflow/updatelead. Their example shows occupancy_type/collateral_type as

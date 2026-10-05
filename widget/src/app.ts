@@ -36,7 +36,8 @@ const NEXT_STEP_LOADING_LABEL: Record<string, string> = {
   otpBureauNotFound: 'Fetching your credit report…',
   panDuplicateChoice: 'One moment…',
   emailDuplicateChoice: 'One moment…',
-  profileSummary: 'Checking your eligibility across lenders…',
+  // 'profileSummary' isn't here — it gets the dedicated skeleton card (showSkeletonCard) instead
+  // of this generic spinner row, since it's the eligibility computation itself.
 };
 
 export interface ChatWidgetOptions {
@@ -49,6 +50,11 @@ export class ChatWidget {
   private sessionToken: string | null = null;
   private started = false;
   private resultCardShown = false;
+  /** Set by submitUserValue when a submission (currently: OTP) shouldn't add its chat bubble until
+   * we actually know it was accepted — an OTP retry loop would otherwise leave a stack of
+   * identical, uninformative "••••••" bubbles in the log for every wrong attempt. Consumed (shown,
+   * or discarded on error) the next time renderTurn runs. */
+  private pendingUserBubbleText: string | null = null;
   private resultCollapsed = false;
   private panOfferOffered = false;
   private panOfferNeedsMobile = false;
@@ -257,6 +263,9 @@ export class ChatWidget {
     if (resp.identityToken) localStorage.setItem(IDENTITY_STORAGE_KEY, resp.identityToken);
 
     if (resp.errorText) {
+      // The submission was rejected — discard any deferred bubble for it (a wrong OTP never gets
+      // one), rather than showing it now next to the error.
+      this.pendingUserBubbleText = null;
       // Re-render the same question's input with an inline error — no new bot bubble, to avoid
       // repeating the same question verbatim on every mistaken attempt.
       this.renderComposer(resp);
@@ -287,8 +296,19 @@ export class ChatWidget {
       return;
     }
 
+    // Accepted — show the deferred bubble now (right before whatever the bot says next), since we
+    // now know it was the answer that actually worked.
+    if (this.pendingUserBubbleText) {
+      this.appendUserBubble(this.pendingUserBubbleText);
+      this.pendingUserBubbleText = null;
+    }
+
     if (resp.botMessage) {
-      if (resp.loading) {
+      // 'result' is always flagged loading server-side, but by the time it gets here the real
+      // wait already happened (the skeleton card covered it) — layering on this decorative
+      // 900ms-minimum spinner too would just add a second, pointless loading moment right after
+      // the first one, which is exactly the "loader still showed after the skeleton" complaint.
+      if (resp.loading && resp.stepId !== 'result') {
         await this.appendLoadingThenBot(LOADING_LABEL[resp.stepId] ?? 'One moment…', resp.botMessage, resp.hint);
       } else {
         await this.appendBotBubble(resp.botMessage, resp.hint);
@@ -624,7 +644,9 @@ export class ChatWidget {
     btn.textContent = 'Verify OTP';
     btn.onclick = () => {
       const code = inputs.map((i) => i.value).join('');
-      this.submitUserValue(stepId, code, '••••••');
+      // Deferred: a wrong attempt shouldn't leave a "••••••" bubble sitting in the chat log
+      // forever — only worth showing once we know it actually worked.
+      this.submitUserValue(stepId, code, '••••••', true);
     };
     wrap.appendChild(btn);
 
@@ -649,8 +671,12 @@ export class ChatWidget {
     inputs[0].focus();
   }
 
-  private submitUserValue(stepId: string, value: string, displayText: string) {
-    this.appendUserBubble(displayText);
+  private submitUserValue(stepId: string, value: string, displayText: string, deferBubbleUntilAccepted = false) {
+    if (deferBubbleUntilAccepted) {
+      this.pendingUserBubbleText = displayText;
+    } else {
+      this.appendUserBubble(displayText);
+    }
     this.clearComposer();
     void this.sendAndRender(stepId, value);
   }
@@ -666,15 +692,42 @@ export class ChatWidget {
     return row;
   }
 
+  /** Shown the instant the eligibility computation starts (this is the slowest step — a real
+   * lead-creation + lender-offers round trip) — a placeholder shaped like the real result card,
+   * not a number, since we don't have one yet and showing a made-up one would be misleading. */
+  private showSkeletonCard(): HTMLElement {
+    this.clearComposer();
+    const card = document.createElement('div');
+    card.className = 'lc-skeleton-card';
+    card.innerHTML = `
+      <div class="lc-skeleton-badge"></div>
+      <div class="lc-skeleton-estimating">Estimating<span class="lc-skeleton-dots"><span></span><span></span><span></span></span></div>
+      <div class="lc-skeleton-bar lc-skeleton-bar-amount"></div>
+      <div class="lc-skeleton-grid">
+        <div class="lc-skeleton-bar"></div>
+        <div class="lc-skeleton-bar"></div>
+        <div class="lc-skeleton-bar"></div>
+        <div class="lc-skeleton-bar"></div>
+      </div>
+    `;
+    this.composerEl.appendChild(card);
+    this.scrollDown();
+    return card;
+  }
+
   private async sendAndRender(stepId: string | undefined, value: string | undefined) {
+    const isEligibilityCompute = stepId === 'profileSummary';
     const loadingLabel = stepId ? NEXT_STEP_LOADING_LABEL[stepId] : undefined;
-    const loadingRow = loadingLabel ? this.showLoadingRow(loadingLabel) : null;
+    const loadingRow = !isEligibilityCompute && loadingLabel ? this.showLoadingRow(loadingLabel) : null;
+    const skeletonCard = isEligibilityCompute ? this.showSkeletonCard() : null;
     try {
       const resp = await this.api.send({ sessionToken: this.sessionToken!, stepId, value });
       loadingRow?.remove();
+      skeletonCard?.remove();
       await this.renderTurn(resp);
     } catch (err) {
       loadingRow?.remove();
+      skeletonCard?.remove();
       if (err instanceof SessionExpiredError) {
         localStorage.removeItem(STORAGE_KEY);
         this.sessionToken = null;

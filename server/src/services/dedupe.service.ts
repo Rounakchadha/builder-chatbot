@@ -21,6 +21,19 @@ export interface DedupeMatch {
   pincode?: string;
   segment?: string;
   creditScore?: number;
+  /** 'bureau' | 'experian' — which bureau creditScore came from, same naming as BureauPull.source.
+   * Only ever set by the real service (searchcustomer); undefined on the mock. */
+  bureauSource?: 'bureau' | 'experian';
+  /** ISO timestamp of when creditScore was actually pulled — needed to judge staleness ourselves
+   * if we ever want to, though need_refresh below already tells us the backend's own verdict. */
+  bureauFetchDate?: string;
+  /** The backend's own "this score is stale, pull a fresh one" verdict — not yet acted on anywhere
+   * in the flow (see RealDedupeService.check()'s doc comment). */
+  needsBureauRefresh?: boolean;
+  /** The backend's own "still need bureau consent from this customer" verdict — not yet acted on;
+   * today the flow always asks for the bureau-consent OTP whenever creditScore is missing (see
+   * the otpBureauFound/otpBureauNotFound steps in homeLoan.ts), independent of this flag. */
+  needsBureauConsent?: boolean;
 }
 
 /** What updateCustomer needs to sync onto the real customer record — everything the real
@@ -183,12 +196,29 @@ interface SearchCustomerResult {
   pan_number?: string;
   service_pincode?: string;
   customer_segment?: string;
+  // Confirmed live against UAT (2026-09-30) — searchcustomer now also returns whatever bureau score
+  // is already on file for this customer, instead of nothing at all (see the old comment this
+  // replaced). bureau_type mirrors BureauPull.source's 'CIBIL'/'EXPERIAN' naming, not our own
+  // 'bureau'/'experian' one — mapped below. need_refresh/need_consent are not yet acted on: how they
+  // should change the flow (skip the bureau OTP step outright vs. trigger the new experianapi/
+  // get_customer_assets refresh calls) is still open, see dedupe_service.ts's DedupeMatch doc comment.
+  bureau_score?: number;
+  bureau_type?: 'CIBIL' | 'EXPERIAN';
+  bureau_fetch_date?: string;
+  need_refresh?: boolean;
+  need_consent?: boolean;
+}
+
+/** e.g. "CIBIL" -> 'bureau' (this codebase's own BureauPull.source naming, see bureau.service.ts) */
+function mapBureauType(value: string | undefined): 'bureau' | 'experian' | undefined {
+  if (value === 'CIBIL') return 'bureau';
+  if (value === 'EXPERIAN') return 'experian';
+  return undefined;
 }
 
 /** Real Dedupe API — POST /leadflow/searchcustomer. Checked by mobile, since that's the one field
  * we always have at this point in the conversation (PAN/email aren't collected yet for a new
- * customer). No credit score in this response — that's fine, our own bureauFetchFound step already
- * fetches one separately if it's still missing once we get there.
+ * customer).
  *
  * Confirmed live against UAT: validateotpv2 (OTP #1, which always runs right before this) creates
  * a bare customer record — mobile only, no PAN/name — as a side effect for a genuinely brand-new
@@ -211,6 +241,11 @@ class RealDedupeService implements DedupeService {
         email: match.official_email || match.primary_email,
         pincode: match.service_pincode,
         segment: mapRemoteSegment(match.customer_segment),
+        creditScore: match.bureau_score,
+        bureauSource: mapBureauType(match.bureau_type),
+        bureauFetchDate: match.bureau_fetch_date,
+        needsBureauRefresh: match.need_refresh,
+        needsBureauConsent: match.need_consent,
       };
     } catch (err) {
       if (err instanceof FinfinityApiError && err.code === 'CUSTOMER_NOT_FOUND') return null;

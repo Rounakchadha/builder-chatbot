@@ -310,6 +310,33 @@
 
 .lc-disclaimer{ font-size:10.5px; color:var(--lc-ink-soft); background:var(--lc-panel-raised); border-radius:12px; padding:11px 13px; margin-top:16px; line-height:1.6; border: 1px solid var(--lc-line); max-width: 700px; }
 
+/* ---------- skeleton card — shown the instant eligibility computation starts ---------- */
+.lc-skeleton-card{
+  border-radius:18px; padding:20px;
+  background: linear-gradient(165deg, #132019 0%, #0D1512 100%);
+  border: 1px solid var(--lc-line-strong);
+  margin-top:4px; animation: lc-card-in .4s cubic-bezier(.2,.8,.3,1) both;
+}
+.lc-skeleton-badge{ width:150px; height:20px; border-radius:99px; margin-bottom:14px; }
+.lc-skeleton-estimating{ display:flex; align-items:center; gap:8px; font-size:12.5px; font-weight:600; color:var(--lc-ink-soft); margin-bottom:14px; }
+.lc-skeleton-dots{ display:flex; gap:4px; }
+.lc-skeleton-dots span{ width:5px;height:5px;border-radius:50%; background:var(--lc-primary); animation: lc-bounce 1.2s infinite ease-in-out; }
+.lc-skeleton-dots span:nth-child(2){ animation-delay:.15s; }
+.lc-skeleton-dots span:nth-child(3){ animation-delay:.3s; }
+.lc-skeleton-bar{ height:16px; border-radius:8px; }
+.lc-skeleton-bar-amount{ height:34px; width:65%; margin-bottom:16px; border-radius:10px; }
+.lc-skeleton-grid{ display:grid; grid-template-columns:1fr 1fr; gap:12px 14px; padding-top:14px; border-top:1px dashed var(--lc-line); }
+.lc-skeleton-badge, .lc-skeleton-bar{
+  background: linear-gradient(90deg, var(--lc-panel-raised) 25%, var(--lc-line-strong) 50%, var(--lc-panel-raised) 75%);
+  background-size: 200% 100%;
+  animation: lc-skeleton-shimmer 1.6s ease-in-out infinite;
+}
+@keyframes lc-skeleton-shimmer{ 0%{ background-position: 200% 0; } 100%{ background-position: -200% 0; } }
+@media (prefers-reduced-motion: reduce){
+  .lc-skeleton-badge, .lc-skeleton-bar{ animation: none; }
+  .lc-skeleton-dots span{ animation: none; opacity: .7; }
+}
+
 .lc-rm-card{ display:flex; gap:12px; align-items:center; margin-top:16px; padding:13px; background:var(--lc-panel-raised); border:1.5px solid var(--lc-line); border-radius:16px; }
 .lc-rm-avatar{ width:40px;height:40px;border-radius:50%; background: var(--lc-primary-soft); color:var(--lc-primary); display:flex;align-items:center;justify-content:center; font-family:var(--lc-font-display); font-weight:700; font-size:14px; flex-shrink:0; border: 1px solid var(--lc-line-strong); }
 .lc-rm-name{ font-size:12.5px; font-weight:700; color: var(--lc-ink); }

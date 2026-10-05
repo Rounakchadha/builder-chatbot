@@ -84,10 +84,9 @@ interface GetCustomerOffersHlResponse {
  * flows/homeLoan.ts's computeResultPayload already creates the lead before calling this (see
  * ensureLead there), so `input.leadId` is always the real lead's id by the time evaluate() runs.
  *
- * IMPORTANT caveat confirmed live: the lead itself carries no income/employment financials (none
- * of the 7 documented APIs have a field for it), so every lender comes back rejected with 0
- * eligibility until there's a way to actually submit that data — see the doc comment on
- * ensureLead in flows/homeLoan.ts. */
+ * income/emi ARE pushed onto the lead before this ever runs — see updateLead's monthly_income/
+ * existing_emi in lead.service.ts and syncLeadFinancials in flows/homeLoan.ts, which both
+ * computeResultPayload and recomputeEligibility call before getting here. */
 class RealEligibilityService implements EligibilityService {
   async evaluate(input: EligibilityInput): Promise<EligibilityResult> {
     if (!input.leadId) {
