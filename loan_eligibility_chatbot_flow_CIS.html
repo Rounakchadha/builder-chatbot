@@ -1,0 +1,926 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Loan eligibility assistant — chatbot flow</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --ink:#1B2B27;
+    --ink-soft:#4B5A55;
+    --paper:#F3F1EA;
+    --panel:#FFFFFF;
+    --line:#DAD5C7;
+    --primary:#1E3F38;
+    --primary-soft:#E4ECE9;
+    --accent:#C08A2E;
+    --accent-soft:#F3E4C4;
+    --bad:#A3372C;
+    --bad-soft:#F6E4E1;
+    --radius:14px;
+    --font-display:'Fraunces', serif;
+    --font-body:'Inter', sans-serif;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    background:var(--paper);
+    font-family:var(--font-body);
+    color:var(--ink);
+    display:flex;
+    justify-content:center;
+    padding:32px 16px;
+  }
+  .app{
+    width:100%;
+    max-width:560px;
+  }
+  .masthead{
+    display:flex;
+    align-items:center;
+    gap:12px;
+    margin-bottom:18px;
+  }
+  .masthead .mark{
+    width:40px;height:40px;border-radius:10px;
+    background:var(--primary);
+    display:flex;align-items:center;justify-content:center;
+    flex-shrink:0;
+  }
+  .masthead .mark svg{width:20px;height:20px;stroke:var(--paper);}
+  .masthead h1{
+    font-family:var(--font-display);
+    font-size:20px;
+    font-weight:600;
+    margin:0;
+    letter-spacing:0.2px;
+  }
+  .masthead p{
+    margin:2px 0 0;
+    font-size:13px;
+    color:var(--ink-soft);
+  }
+
+  .progress-wrap{
+    margin-bottom:16px;
+  }
+  .progress-label{
+    display:flex;
+    justify-content:space-between;
+    font-size:11px;
+    color:var(--ink-soft);
+    margin-bottom:6px;
+    text-transform:uppercase;
+    letter-spacing:0.06em;
+  }
+  .progress-track{
+    height:5px;
+    background:var(--line);
+    border-radius:99px;
+    overflow:hidden;
+  }
+  .progress-fill{
+    height:100%;
+    background:var(--accent);
+    border-radius:99px;
+    transition:width .4s ease;
+    width:0%;
+  }
+
+  .card{
+    background:var(--panel);
+    border:1px solid var(--line);
+    border-radius:var(--radius);
+    padding:18px 18px 20px;
+  }
+
+  .chat-log{
+    display:flex;
+    flex-direction:column;
+    gap:14px;
+    max-height:56vh;
+    overflow-y:auto;
+    padding-right:2px;
+    scroll-behavior:smooth;
+  }
+  .chat-log::-webkit-scrollbar{width:6px;}
+  .chat-log::-webkit-scrollbar-thumb{background:var(--line);border-radius:99px;}
+
+  .row{display:flex;gap:9px;align-items:flex-start;}
+  .row.user{justify-content:flex-end;}
+  .avatar{
+    width:28px;height:28px;border-radius:8px;
+    background:var(--primary);
+    flex-shrink:0;
+    display:flex;align-items:center;justify-content:center;
+    margin-top:2px;
+  }
+  .avatar svg{width:14px;height:14px;stroke:var(--paper);}
+  .bubble{
+    padding:10px 13px;
+    border-radius:12px;
+    font-size:14.5px;
+    line-height:1.5;
+    max-width:82%;
+  }
+  .row.bot .bubble{
+    background:var(--primary-soft);
+    border-top-left-radius:4px;
+    color:var(--ink);
+  }
+  .row.user .bubble{
+    background:var(--primary);
+    color:var(--paper);
+    border-top-right-radius:4px;
+  }
+  .hint{
+    font-size:12px;
+    color:var(--ink-soft);
+    margin-top:5px;
+    padding-left:2px;
+    display:flex;
+    gap:5px;
+    max-width:82%;
+  }
+  .hint svg{width:12px;height:12px;flex-shrink:0;margin-top:2px;stroke:var(--ink-soft);}
+
+  .typing{
+    display:flex;gap:4px;padding:12px 13px;
+    background:var(--primary-soft);
+    border-radius:12px;
+    border-top-left-radius:4px;
+    width:fit-content;
+  }
+  .typing span{
+    width:6px;height:6px;border-radius:50%;
+    background:var(--ink-soft);
+    animation:bounce 1.2s infinite ease-in-out;
+  }
+  .typing span:nth-child(2){animation-delay:.15s;}
+  .typing span:nth-child(3){animation-delay:.3s;}
+  @keyframes bounce{0%,60%,100%{transform:translateY(0);opacity:.4;}30%{transform:translateY(-4px);opacity:1;}}
+  @media (prefers-reduced-motion: reduce){
+    .typing span{animation:none;opacity:.7;}
+  }
+
+  .composer{
+    border-top:1px solid var(--line);
+    margin-top:14px;
+    padding-top:14px;
+  }
+  .field-label{
+    font-size:12.5px;
+    font-weight:500;
+    color:var(--ink-soft);
+    margin-bottom:7px;
+  }
+  input[type=text], input[type=tel], input[type=number]{
+    width:100%;
+    padding:11px 13px;
+    border:1px solid var(--line);
+    border-radius:10px;
+    font-size:15px;
+    font-family:var(--font-body);
+    background:var(--paper);
+    color:var(--ink);
+  }
+  input:focus{outline:2px solid var(--accent);outline-offset:1px;}
+  .error-text{
+    font-size:12px;
+    color:var(--bad);
+    margin-top:6px;
+    display:none;
+  }
+  .error-text.show{display:block;}
+
+  .btn-row{display:flex;flex-wrap:wrap;gap:8px;}
+  .choice-btn{
+    flex:1 1 auto;
+    padding:11px 14px;
+    border-radius:10px;
+    border:1px solid var(--line);
+    background:var(--panel);
+    font-family:var(--font-body);
+    font-size:14px;
+    font-weight:500;
+    color:var(--ink);
+    cursor:pointer;
+    text-align:left;
+    transition:border-color .15s, background .15s;
+  }
+  .choice-btn:hover{border-color:var(--primary);background:var(--primary-soft);}
+
+  .primary-btn{
+    width:100%;
+    padding:12px 14px;
+    border-radius:10px;
+    border:none;
+    background:var(--primary);
+    color:var(--paper);
+    font-family:var(--font-body);
+    font-size:14.5px;
+    font-weight:600;
+    cursor:pointer;
+    margin-top:12px;
+  }
+  .primary-btn:hover{background:#16302A;}
+  .primary-btn:disabled{opacity:.45;cursor:not-allowed;}
+
+  .ghost-btn{
+    width:100%;
+    padding:10px 14px;
+    border-radius:10px;
+    border:1px solid var(--line);
+    background:transparent;
+    color:var(--ink-soft);
+    font-family:var(--font-body);
+    font-size:13px;
+    font-weight:500;
+    cursor:pointer;
+    margin-top:8px;
+  }
+  .ghost-btn:hover{border-color:var(--primary);color:var(--primary);}
+
+  .loading-row{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--ink-soft);padding:2px 0;}
+  .spinner{
+    width:14px;height:14px;border-radius:50%;
+    border:2px solid var(--line);
+    border-top-color:var(--accent);
+    animation:spin .7s linear infinite;
+  }
+  @keyframes spin{to{transform:rotate(360deg);}}
+  @media (prefers-reduced-motion: reduce){.spinner{animation:spin 1.4s linear infinite;}}
+
+  .otp-boxes{display:flex;gap:8px;margin-bottom:4px;}
+  .otp-boxes input{
+    width:42px;height:48px;text-align:center;font-size:18px;padding:0;
+  }
+
+  /* Sanction-style result card */
+  .sanction{
+    border:1px dashed var(--line);
+    border-radius:12px;
+    padding:18px;
+    background:linear-gradient(0deg, var(--paper), var(--paper));
+    margin-top:6px;
+  }
+  .sanction .eyebrow{
+    font-size:11px;
+    text-transform:uppercase;
+    letter-spacing:0.08em;
+    color:var(--ink-soft);
+  }
+  .sanction .amount{
+    font-family:var(--font-display);
+    font-size:34px;
+    font-weight:600;
+    color:var(--primary);
+    margin:4px 0 2px;
+  }
+  .sanction .amount-note{font-size:12.5px;color:var(--ink-soft);margin-bottom:14px;}
+  .sanction .grid{
+    display:grid;
+    grid-template-columns:1fr 1fr;
+    gap:10px 16px;
+    padding-top:12px;
+    border-top:1px dashed var(--line);
+  }
+  .sanction .grid div span{display:block;}
+  .grid .k{font-size:11px;color:var(--ink-soft);text-transform:uppercase;letter-spacing:0.04em;}
+  .grid .v{font-size:14px;font-weight:500;margin-top:2px;}
+
+  .lender-list{
+    display:flex;
+    flex-direction:column;
+    gap:8px;
+    margin-top:6px;
+  }
+  .lender-row{
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    gap:10px;
+    padding:11px 13px;
+    background:var(--panel);
+    border:1px solid var(--line);
+    border-radius:10px;
+  }
+  .lender-row.best{
+    border-color:var(--accent);
+    background:var(--accent-soft);
+  }
+  .lender-name-wrap{display:flex;flex-direction:column;gap:2px;}
+  .lender-name{font-size:13.5px;font-weight:600;}
+  .lender-rate{font-size:11.5px;color:var(--ink-soft);}
+  .lender-amount-wrap{text-align:right;}
+  .lender-amount{font-size:15px;font-weight:600;color:var(--primary);}
+  .lender-emi{font-size:11px;color:var(--ink-soft);}
+  .best-tag{
+    display:inline-block;
+    font-size:10px;
+    font-weight:600;
+    text-transform:uppercase;
+    letter-spacing:0.04em;
+    color:var(--accent);
+    margin-bottom:2px;
+  }
+  .disclaimer{
+    font-size:11.5px;
+    color:var(--ink-soft);
+    background:var(--primary-soft);
+    border-radius:10px;
+    padding:10px 12px;
+    margin-top:14px;
+    line-height:1.5;
+  }
+
+  .rm-card{
+    display:flex;
+    gap:12px;
+    align-items:center;
+    margin-top:16px;
+    padding:14px;
+    background:var(--panel);
+    border:1px solid var(--line);
+    border-radius:12px;
+  }
+  .rm-avatar{
+    width:42px;height:42px;border-radius:50%;
+    background:var(--accent-soft);
+    color:var(--accent);
+    display:flex;align-items:center;justify-content:center;
+    font-family:var(--font-display);font-weight:600;font-size:15px;
+    flex-shrink:0;
+  }
+  .rm-card .rm-name{font-size:14px;font-weight:600;}
+  .rm-card .rm-meta{font-size:12.5px;color:var(--ink-soft);margin-top:1px;}
+
+  .badge{
+    display:inline-flex;align-items:center;gap:4px;
+    font-size:11.5px;font-weight:500;
+    padding:3px 8px;border-radius:99px;
+    background:var(--primary-soft);color:var(--primary);
+    margin-bottom:8px;
+  }
+  .badge svg{width:11px;height:11px;stroke:var(--primary);}
+
+  footer{
+    text-align:center;
+    font-size:11.5px;
+    color:var(--ink-soft);
+    margin-top:16px;
+  }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <div class="masthead">
+    <div class="mark">
+      <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10l9-6 9 6"/><path d="M5 10v9h14v-9"/><path d="M10 19v-6h4v6"/></svg>
+    </div>
+    <div>
+      <h1>Loan eligibility assistant</h1>
+      <p>Home loan &amp; loan against property — guided in minutes</p>
+    </div>
+  </div>
+
+  <div class="progress-wrap">
+    <div class="progress-label"><span id="progressStepLabel">Step 1 of 12</span><span id="progressPct">Getting started</span></div>
+    <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
+  </div>
+
+  <div class="card">
+    <div class="chat-log" id="chatLog"></div>
+    <div class="composer" id="composer"></div>
+  </div>
+
+  <footer>This is a guided prototype for illustration purposes only.</footer>
+</div>
+
+<script>
+/* ---------- icons ---------- */
+const ICON = {
+  bot: '<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="8" width="16" height="12" rx="2"/><path d="M12 8V4"/><circle cx="8.5" cy="14" r="1"/><circle cx="15.5" cy="14" r="1"/></svg>',
+  info: '<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>',
+  check: '<svg viewBox="0 0 24 24" fill="none" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>'
+};
+
+/* ---------- flow definition (from CIS_Flow.xlsx) ---------- */
+const STEP_ORDER = ['mobile','otp','pan','fetch','segment','pincode','bureau','product','loanType','income','emi','propertyGate','propertyType','occupancy','result'];
+
+const LENDERS = [
+  {name:'HDFC Bank'}, {name:'ICICI Bank'}, {name:'SBI Home Loans'}, {name:'Axis Bank'},
+  {name:'Kotak Mahindra Bank'}, {name:'Bajaj Housing Finance'}, {name:'LIC Housing Finance'}, {name:'PNB Housing Finance'}
+];
+
+const PROPERTY_TYPES = {
+  'Home loan': ['Plot purchase','Row house','Bungalow','Apartment'],
+  'Loan against property': ['Residential','Commercial','Industrial']
+};
+const LOAN_TYPES = {
+  'Home loan': ['Fresh purchase','Balance transfer (BT)'],
+  'Loan against property': ['Property purchase','Loan against property (LAP)','Balance transfer (BT)']
+};
+const SEGMENTS = ['Salaried','Business owner','Self-employed professional'];
+const RMS = [
+  {name:'Ananya Rao', phone:'+91 98200 11223', email:'ananya.rao@bankrm.example'},
+  {name:'Karan Mehta', phone:'+91 98330 55671', email:'karan.mehta@bankrm.example'},
+  {name:'Priya Nair', phone:'+91 99870 40982', email:'priya.nair@bankrm.example'},
+  {name:'Sameer Iyer', phone:'+91 90040 66210', email:'sameer.iyer@bankrm.example'}
+];
+
+let answers = {};
+let currentStep = null;
+
+const chatLog = document.getElementById('chatLog');
+const composer = document.getElementById('composer');
+const progressFill = document.getElementById('progressFill');
+const progressStepLabel = document.getElementById('progressStepLabel');
+const progressPct = document.getElementById('progressPct');
+
+/* ---------- applicability / branching ---------- */
+function isBT(){ return (answers.loanType || '').includes('Balance transfer'); }
+// Property is already identified for: any Balance transfer, and LAP where the loan type
+// itself is "Loan against property" (borrowing against a property already owned).
+// It still needs to be asked for: Home loan "Fresh purchase" and LAP "Property purchase".
+function propertyAlreadyIdentified(){
+  return isBT() || answers.loanType === 'Loan against property (LAP)';
+}
+function isApplicable(id){
+  if(id === 'propertyGate') return !propertyAlreadyIdentified();
+  if(id === 'propertyType') return propertyAlreadyIdentified() || answers.propertyIdentified === 'Yes';
+  if(id === 'occupancy') return answers.product === 'Loan against property' && (propertyAlreadyIdentified() || answers.propertyIdentified === 'Yes');
+  return true;
+}
+function applicablePath(){ return STEP_ORDER.filter(isApplicable); }
+function nextStepId(id){
+  const path = applicablePath();
+  const idx = path.indexOf(id);
+  return path[idx+1] || null;
+}
+
+/* ---------- chat rendering helpers ---------- */
+function scrollDown(){ requestAnimationFrame(()=>{ chatLog.scrollTop = chatLog.scrollHeight; }); }
+
+function botMessage(html, hintHtml){
+  return new Promise(resolve=>{
+    const typingRow = document.createElement('div');
+    typingRow.className = 'row bot';
+    typingRow.innerHTML = `<div class="avatar">${ICON.bot}</div><div class="typing"><span></span><span></span><span></span></div>`;
+    chatLog.appendChild(typingRow);
+    scrollDown();
+    setTimeout(()=>{
+      typingRow.remove();
+      const row = document.createElement('div');
+      row.className = 'row bot';
+      row.innerHTML = `<div class="avatar">${ICON.bot}</div><div><div class="bubble">${html}</div>${hintHtml ? `<div class="hint">${ICON.info}<span>${hintHtml}</span></div>` : ''}</div>`;
+      chatLog.appendChild(row);
+      scrollDown();
+      resolve();
+    }, 480);
+  });
+}
+
+function userMessage(text){
+  const row = document.createElement('div');
+  row.className = 'row user';
+  row.innerHTML = `<div class="bubble">${text}</div>`;
+  chatLog.appendChild(row);
+  scrollDown();
+}
+
+function loadingMessage(text){
+  const row = document.createElement('div');
+  row.className = 'row bot';
+  row.innerHTML = `<div class="avatar">${ICON.bot}</div><div class="loading-row"><div class="spinner"></div><span>${text}</span></div>`;
+  chatLog.appendChild(row);
+  scrollDown();
+  return row;
+}
+
+function clearComposer(){ composer.innerHTML = ''; }
+
+function updateProgress(id){
+  const path = applicablePath();
+  const idx = path.indexOf(id);
+  const total = path.length;
+  const n = idx + 1;
+  progressFill.style.width = Math.round((n/total)*100) + '%';
+  progressStepLabel.textContent = `Step ${n} of ${total}`;
+  const labels = {
+    mobile:'Getting started', otp:'Verifying identity', pan:'Verifying identity', fetch:'Verifying identity',
+    segment:'About you', pincode:'About you', bureau:'Checking credit profile', product:'Choosing a product', loanType:'Choosing a product',
+    income:'Financial details', emi:'Financial details', propertyGate:'Property details', propertyType:'Property details',
+    occupancy:'Property details', result:'Your eligibility'
+  };
+  progressPct.textContent = labels[id] || '';
+}
+
+/* ---------- step router ---------- */
+function goTo(id){
+  currentStep = id;
+  updateProgress(id);
+  STEPS[id]();
+}
+
+const STEPS = {
+
+  mobile: async function(){
+    await botMessage('Hi, I\'m your loan eligibility assistant. Let\'s check what you\'re eligible for — it takes about 3 minutes. To start, what\'s your mobile number?', 'We\'ll send a one-time password to this number to verify it\'s really you.');
+    clearComposer();
+    composer.innerHTML = `
+      <div class="field-label">Mobile number</div>
+      <input type="tel" id="in-mobile" placeholder="10-digit mobile number" maxlength="10" inputmode="numeric">
+      <div class="error-text" id="err-mobile">Enter a valid 10-digit mobile number.</div>
+      <button class="primary-btn" id="btn-mobile">Send OTP</button>
+    `;
+    const input = document.getElementById('in-mobile');
+    const err = document.getElementById('err-mobile');
+    document.getElementById('btn-mobile').onclick = ()=>{
+      const val = input.value.trim();
+      if(!/^[6-9]\d{9}$/.test(val)){ err.classList.add('show'); return; }
+      err.classList.remove('show');
+      answers.mobile = val;
+      userMessage(val.replace(/(\d{5})(\d{5})/, '$1 $2'));
+      goTo('otp');
+    };
+    input.addEventListener('input', ()=> err.classList.remove('show'));
+  },
+
+  otp: async function(){
+    await botMessage(`We've sent a 6-digit OTP to +91 ${answers.mobile.replace(/(\d{5})(\d{5})/, '$1 $2')}. Enter it below to verify.`, 'This confirms you\'re the owner of this number before we pull any of your details.');
+    clearComposer();
+    composer.innerHTML = `
+      <div class="field-label">One-time password</div>
+      <div class="otp-boxes">${[0,1,2,3,4,5].map(i=>`<input type="text" maxlength="1" inputmode="numeric" class="otp-digit" data-i="${i}">`).join('')}</div>
+      <div class="error-text" id="err-otp">Enter all 6 digits.</div>
+      <button class="primary-btn" id="btn-otp">Verify OTP</button>
+      <button class="ghost-btn" id="btn-resend">Resend OTP</button>
+    `;
+    const digits = [...document.querySelectorAll('.otp-digit')];
+    digits.forEach((d,i)=>{
+      d.addEventListener('input', ()=>{ d.value = d.value.replace(/\D/g,''); if(d.value && digits[i+1]) digits[i+1].focus(); });
+      d.addEventListener('keydown', e=>{ if(e.key==='Backspace' && !d.value && digits[i-1]) digits[i-1].focus(); });
+    });
+    document.getElementById('btn-resend').onclick = (e)=>{ e.preventDefault(); };
+    document.getElementById('btn-otp').onclick = ()=>{
+      const code = digits.map(d=>d.value).join('');
+      const err = document.getElementById('err-otp');
+      if(code.length !== 6){ err.classList.add('show'); return; }
+      err.classList.remove('show');
+      userMessage('••••••');
+      goTo('pan');
+    };
+  },
+
+  pan: async function(){
+    await botMessage('Number verified. Now, please share your PAN.', 'We use your PAN to securely fetch your name, date of birth, and credit bureau record — you won\'t need to type them in.');
+    clearComposer();
+    composer.innerHTML = `
+      <div class="field-label">PAN</div>
+      <input type="text" id="in-pan" placeholder="ABCDE1234F" maxlength="10" style="text-transform:uppercase">
+      <div class="error-text" id="err-pan">Enter a valid PAN, e.g. ABCDE1234F.</div>
+      <button class="primary-btn" id="btn-pan">Continue</button>
+    `;
+    const input = document.getElementById('in-pan');
+    input.addEventListener('input', ()=>{ input.value = input.value.toUpperCase(); document.getElementById('err-pan').classList.remove('show'); });
+    document.getElementById('btn-pan').onclick = ()=>{
+      const val = input.value.trim();
+      if(!/^[A-Z]{5}\d{4}[A-Z]$/.test(val)){ document.getElementById('err-pan').classList.add('show'); return; }
+      answers.pan = val;
+      userMessage(val);
+      goTo('fetch');
+    };
+  },
+
+  fetch: async function(){
+    clearComposer();
+    const row = loadingMessage('Fetching your details via PAN…');
+    setTimeout(async ()=>{
+      row.remove();
+      const mock = mockIdentityFromPan(answers.pan);
+      answers.name = mock.name;
+      answers.dob = mock.dob;
+      await botMessage(`Found you — <strong>${mock.name}</strong>, born ${mock.dob}.`, 'Fetched automatically via the PAN API, so nothing to type here.');
+      composer.innerHTML = `<button class="primary-btn" id="btn-fetch-ok">That\'s me, continue</button>`;
+      document.getElementById('btn-fetch-ok').onclick = ()=>{ goTo('segment'); };
+    }, 900);
+  },
+
+  segment: async function(){
+    await botMessage('Which of these best describes you?', 'This helps us show you the right loan product and use the correct eligibility criteria for your profile.');
+    clearComposer();
+    composer.innerHTML = `<div class="btn-row" style="flex-direction:column" id="segment-btns"></div>`;
+    const wrap = document.getElementById('segment-btns');
+    SEGMENTS.forEach(s=>{
+      const b = document.createElement('button');
+      b.className = 'choice-btn';
+      b.textContent = s;
+      b.onclick = ()=>{ answers.segment = s; userMessage(s); goTo('bureau'); };
+      wrap.appendChild(b);
+    });
+  },
+
+  pincode: async function(){
+    await botMessage('What\'s your current residence pincode?', 'We need this to pull the correct bureau report and check which lenders operate in your area.');
+    clearComposer();
+    composer.innerHTML = `
+      <div class="field-label">Pincode</div>
+      <input type="text" id="in-pincode" placeholder="e.g. 400001" maxlength="6" inputmode="numeric">
+      <div class="error-text" id="err-pincode">Enter a valid 6-digit pincode.</div>
+      <button class="primary-btn" id="btn-pincode">Continue</button>
+    `;
+    const input = document.getElementById('in-pincode');
+    input.addEventListener('input', ()=>{ input.value = input.value.replace(/\D/g,''); document.getElementById('err-pincode').classList.remove('show'); });
+    document.getElementById('btn-pincode').onclick = ()=>{
+      const val = input.value.trim();
+      if(!/^[1-9]\d{5}$/.test(val)){ document.getElementById('err-pincode').classList.add('show'); return; }
+      answers.pincode = val;
+      userMessage(val);
+      goTo('bureau');
+    };
+  },
+
+  bureau: async function(){
+    clearComposer();
+    const row = loadingMessage('Checking your credit bureau record…');
+    setTimeout(async ()=>{
+      row.remove();
+      answers.creditScore = mockCreditScore(answers.pan);
+      await botMessage(`Your current credit score is <strong>${answers.creditScore}</strong>.`, 'A healthy score helps unlock better eligibility and interest rates.');
+      composer.innerHTML = `<button class="primary-btn" id="btn-bureau-ok">Continue</button>`;
+      document.getElementById('btn-bureau-ok').onclick = ()=>{ goTo('product'); };
+    }, 900);
+  },
+
+  product: async function(){
+    await botMessage('What are you looking to finance?', 'Based on your profile, both products below are available to you.');
+    clearComposer();
+    composer.innerHTML = `<div class="btn-row" style="flex-direction:column" id="product-btns"></div>`;
+    const wrap = document.getElementById('product-btns');
+    ['Home loan','Loan against property'].forEach(p=>{
+      const b = document.createElement('button');
+      b.className = 'choice-btn';
+      b.textContent = p;
+      b.onclick = ()=>{ answers.product = p; answers.loanType = null; answers.propertyIdentified = null; answers.propertyType = null; answers.occupancy = null; userMessage(p); goTo('loanType'); };
+      wrap.appendChild(b);
+    });
+  },
+
+  loanType: async function(){
+    await botMessage(`Got it — <strong>${answers.product}</strong>. What type of loan is this?`);
+    clearComposer();
+    composer.innerHTML = `<div class="btn-row" style="flex-direction:column" id="lt-btns"></div>`;
+    const wrap = document.getElementById('lt-btns');
+    LOAN_TYPES[answers.product].forEach(t=>{
+      const b = document.createElement('button');
+      b.className = 'choice-btn';
+      b.textContent = t;
+      b.onclick = ()=>{ answers.loanType = t; userMessage(t); goTo('income'); };
+      wrap.appendChild(b);
+    });
+  },
+
+  income: async function(){
+    await botMessage('What\'s your monthly income?', 'Net take-home for salaried, or average monthly income for business owners and self-employed professionals.');
+    clearComposer();
+    composer.innerHTML = `
+      <div class="field-label">Monthly income (₹)</div>
+      <input type="number" id="in-income" placeholder="e.g. 85000" min="0">
+      <div class="error-text" id="err-income">Enter your monthly income.</div>
+      <button class="primary-btn" id="btn-income">Continue</button>
+    `;
+    document.getElementById('in-income').addEventListener('input', ()=> document.getElementById('err-income').classList.remove('show'));
+    document.getElementById('btn-income').onclick = ()=>{
+      const val = Number(document.getElementById('in-income').value);
+      if(!val || val <= 0){ document.getElementById('err-income').classList.add('show'); return; }
+      answers.income = val;
+      userMessage('₹' + val.toLocaleString('en-IN') + ' / month');
+      goTo('emi');
+    };
+  },
+
+  emi: async function(){
+    const btNote = isBT() ? ' Since this is a balance transfer, don\'t include the EMI of the loan you\'re transferring.' : '';
+    await botMessage('Do you currently have any other loan EMIs?', `Only include loans with more than 12 months of tenure remaining.${btNote}`);
+    clearComposer();
+    composer.innerHTML = `
+      <div class="field-label">Existing monthly EMIs (₹) — enter 0 if none</div>
+      <input type="number" id="in-emi" placeholder="e.g. 12000" min="0">
+      <button class="primary-btn" id="btn-emi">Continue</button>
+    `;
+    document.getElementById('btn-emi').onclick = ()=>{
+      const val = Number(document.getElementById('in-emi').value) || 0;
+      answers.emi = val;
+      userMessage(val > 0 ? '₹' + val.toLocaleString('en-IN') + ' / month' : 'No existing EMIs');
+      goTo('propertyGate');
+    };
+  },
+
+  propertyGate: async function(){
+    if(!isApplicable('propertyGate')){ goTo('propertyType'); return; }
+    await botMessage('Have you identified the property yet?');
+    clearComposer();
+    composer.innerHTML = `<div class="btn-row"><button class="choice-btn" id="pg-yes">Yes</button><button class="choice-btn" id="pg-no">Not yet</button></div>`;
+    document.getElementById('pg-yes').onclick = ()=>{ answers.propertyIdentified = 'Yes'; userMessage('Yes'); goTo('propertyType'); };
+    document.getElementById('pg-no').onclick = ()=>{ answers.propertyIdentified = 'No'; userMessage('Not yet'); goTo('propertyType'); };
+  },
+
+  propertyType: async function(){
+    if(!isApplicable('propertyType')){ goTo('occupancy'); return; }
+    const skippedNote = propertyAlreadyIdentified() ? ' Since the property is already funded and owned, we\'ll just confirm its type.' : '';
+    await botMessage('What type of property is it?', `This is used only for underwriting context.${skippedNote}`);
+    clearComposer();
+    composer.innerHTML = `<div class="btn-row" style="flex-direction:column" id="pt-btns"></div>`;
+    const wrap = document.getElementById('pt-btns');
+    PROPERTY_TYPES[answers.product].forEach(t=>{
+      const b = document.createElement('button');
+      b.className = 'choice-btn';
+      b.textContent = t;
+      b.onclick = ()=>{ answers.propertyType = t; userMessage(t); goTo('occupancy'); };
+      wrap.appendChild(b);
+    });
+  },
+
+  occupancy: async function(){
+    if(!isApplicable('occupancy')){ goTo('result'); return; }
+    await botMessage('And what\'s the occupancy status of the property?', 'This applies to loan against property applications only.');
+    clearComposer();
+    composer.innerHTML = `<div class="btn-row" id="occ-btns"></div>`;
+    const wrap = document.getElementById('occ-btns');
+    ['Self-occupied','Rented','Vacant'].forEach(o=>{
+      const b = document.createElement('button');
+      b.className = 'choice-btn';
+      b.textContent = o;
+      b.onclick = ()=>{ answers.occupancy = o; userMessage(o); goTo('result'); };
+      wrap.appendChild(b);
+    });
+  },
+
+  result: async function(){
+    clearComposer();
+    const row = loadingMessage('Checking your eligibility across lenders…');
+    setTimeout(async ()=>{
+      row.remove();
+      const calc = computeEligibility(answers);
+      const rm = RMS[Math.abs(hashCode(answers.pan)) % RMS.length];
+      const leadId = generateLeadId();
+
+      if(!calc.eligible){
+        await botMessage(`Based on your current income and obligations, you don\'t meet the minimum eligibility for a ${answers.product.toLowerCase()} right now.`, 'This usually improves with a co-applicant\'s income, or by reducing existing EMI obligations.');
+        clearComposer();
+        composer.innerHTML = `
+          <div class="rm-card">
+            <div class="rm-avatar">${initials(rm.name)}</div>
+            <div>
+              <div class="rm-name">${rm.name} · your relationship manager</div>
+              <div class="rm-meta">${rm.phone} · ${rm.email}</div>
+              <div class="rm-meta">Lead ID: ${leadId}</div>
+            </div>
+          </div>
+          <div class="disclaimer">Eligibility, interest rate, processing fee, and other charges shown are tentative and based on the details provided. Final eligibility and terms are subject to each lender's verification and credit policy, and may differ from what is displayed here.</div>
+          <button class="ghost-btn" id="btn-restart">Start a new check</button>
+        `;
+        document.getElementById('btn-restart').onclick = restart;
+        return;
+      }
+
+      const offers = LENDERS.map(l => computeLenderEligibility(answers, l)).sort((a,b)=> b.amountLakh - a.amountLakh);
+
+      await botMessage(`Here\'s your loan eligibility across lenders, ${answers.name.split(' ')[0]}.`);
+
+      clearComposer();
+      composer.innerHTML = `
+        <div class="badge">${ICON.check} Eligibility check complete</div>
+        <div class="sanction">
+          <div class="eyebrow">Highest eligibility</div>
+          <div class="amount">₹${offers[0].amountLakh} lakh</div>
+          <div class="amount-note">with ${offers[0].name}, at ${offers[0].rate}% p.a. over ${offers[0].tenureYears} years</div>
+          <div class="grid">
+            <div><span class="k">Product</span><span class="v">${answers.product}</span></div>
+            <div><span class="k">Loan type</span><span class="v">${answers.loanType}</span></div>
+            <div><span class="k">Credit score</span><span class="v">${answers.creditScore}</span></div>
+            <div><span class="k">Segment</span><span class="v">${answers.segment}</span></div>
+            ${answers.propertyType ? `<div><span class="k">Property type</span><span class="v">${answers.propertyType}</span></div>` : ''}
+            ${answers.occupancy ? `<div><span class="k">Occupancy</span><span class="v">${answers.occupancy}</span></div>` : ''}
+          </div>
+        </div>
+
+        <div class="field-label" style="margin-top:16px">Eligibility by lender</div>
+        <div class="lender-list">
+          ${offers.map((o,i)=>`
+            <div class="lender-row ${i===0 ? 'best' : ''}">
+              <div class="lender-name-wrap">
+                ${i===0 ? '<span class="best-tag">Best offer</span>' : ''}
+                <span class="lender-name">${o.name}</span>
+                <span class="lender-rate">${o.rate}% p.a. · ${o.tenureYears} yr tenure</span>
+              </div>
+              <div class="lender-amount-wrap">
+                <div class="lender-amount">₹${o.amountLakh} L</div>
+                <div class="lender-emi">EMI ₹${o.emi.toLocaleString('en-IN')}/mo</div>
+              </div>
+            </div>
+          `).join('')}
+        </div>
+
+        <div class="rm-card">
+          <div class="rm-avatar">${initials(rm.name)}</div>
+          <div>
+            <div class="rm-name">${rm.name} · your relationship manager</div>
+            <div class="rm-meta">${rm.phone} · ${rm.email}</div>
+            <div class="rm-meta">Lead ID: ${leadId}</div>
+          </div>
+        </div>
+
+        <div class="disclaimer">Eligibility, interest rate, processing fee, and other charges shown for each lender are tentative and based on the details provided. Final eligibility and terms are subject to each lender's verification and credit policy, and may differ from what is displayed here.</div>
+        <button class="ghost-btn" id="btn-restart">Start a new check</button>
+      `;
+      document.getElementById('btn-restart').onclick = restart;
+    }, 1100);
+  }
+};
+
+/* ---------- mock data helpers ---------- */
+function hashCode(str){
+  let h = 0;
+  for(let i=0;i<str.length;i++){ h = (h<<5) - h + str.charCodeAt(i); h |= 0; }
+  return h;
+}
+function mockIdentityFromPan(pan){
+  const names = ['Rahul Sharma','Ananya Verma','Vikram Singh','Neha Kapoor','Arjun Patel','Ishita Bose'];
+  const idx = Math.abs(hashCode(pan)) % names.length;
+  const year = 1975 + (Math.abs(hashCode(pan.slice(1))) % 25);
+  const month = 1 + (Math.abs(hashCode(pan.slice(2))) % 12);
+  const day = 1 + (Math.abs(hashCode(pan.slice(3))) % 28);
+  const d = new Date(year, month-1, day);
+  return { name: names[idx], dob: d.toLocaleDateString('en-GB', {day:'2-digit', month:'short', year:'numeric'}) };
+}
+function mockCreditScore(pan){
+  return 680 + (Math.abs(hashCode(pan)) % 171); // 680–850
+}
+function initials(name){
+  return name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
+}
+function generateLeadId(){
+  return 'LN' + Date.now().toString().slice(-6) + Math.random().toString(36).slice(2,4).toUpperCase();
+}
+
+/* ---------- eligibility formula ---------- */
+function computeEligibility(a){
+  const foirBySegment = { 'Salaried': 0.55, 'Business owner': 0.50, 'Self-employed professional': 0.50 };
+  const foir = foirBySegment[a.segment] || 0.5;
+  const rateAnnual = a.product === 'Home loan' ? 0.09 : 0.105;
+  const tenureYears = a.product === 'Home loan' ? 20 : 15;
+  const n = tenureYears * 12;
+  const r = rateAnnual / 12;
+
+  const maxEmi = Math.max(0, a.income * foir - (a.emi || 0));
+  const eligible = maxEmi > 1000; // needs at least a meaningful surplus EMI capacity
+
+  const loanAmount = eligible ? (maxEmi * (Math.pow(1+r, n) - 1)) / (r * Math.pow(1+r, n)) : 0;
+  const loanAmountLakh = (loanAmount / 100000).toFixed(1);
+
+  return { eligible, emi: Math.round(maxEmi), tenureYears, loanAmountLakh };
+}
+
+function computeLenderEligibility(a, lender){
+  const foirBySegment = { 'Salaried': 0.55, 'Business owner': 0.50, 'Self-employed professional': 0.50 };
+  const seed = Math.abs(hashCode(lender.name + a.pan));
+  let foir = (foirBySegment[a.segment] || 0.5) + (((seed % 7) - 3) / 100); // ±3%
+  foir = Math.min(0.65, Math.max(0.35, foir));
+
+  const baseRate = a.product === 'Home loan' ? 0.09 : 0.105;
+  const rate = Math.max(0.075, baseRate + ((((seed >> 3) % 9) - 4) / 1000)); // ±40 bps
+
+  const tenureYears = a.product === 'Home loan' ? 20 : 15;
+  const n = tenureYears * 12;
+  const r = rate / 12;
+
+  const maxEmi = Math.max(0, a.income * foir - (a.emi || 0));
+  const loanAmount = maxEmi > 1000 ? (maxEmi * (Math.pow(1+r, n) - 1)) / (r * Math.pow(1+r, n)) : 0;
+
+  return {
+    name: lender.name,
+    amountLakh: Number((loanAmount / 100000).toFixed(1)),
+    emi: Math.round(maxEmi),
+    rate: (rate * 100).toFixed(2),
+    tenureYears
+  };
+}
+
+/* ---------- init / restart ---------- */
+function restart(){
+  answers = {};
+  currentStep = null;
+  chatLog.innerHTML = '';
+  clearComposer();
+  goTo('mobile');
+}
+restart();
+</script>
+</body>
+</html>

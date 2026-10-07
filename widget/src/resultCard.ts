@@ -85,7 +85,7 @@ export function renderResultCard(result: EligibilityResultPayload): string {
           <div><span class="lc-k">Product</span><span class="lc-v">${result.product}</span></div>
           <div><span class="lc-k">Loan type</span><span class="lc-v">${result.loanType}</span></div>
           ${result.creditScore ? `<div><span class="lc-k">CIBIL score</span><span class="lc-v">${result.creditScore}</span></div>` : ''}
-          <div><span class="lc-k">Segment</span><span class="lc-v">${result.segment}</span></div>
+          ${result.segment ? `<div><span class="lc-k">Segment</span><span class="lc-v">${result.segment}</span></div>` : ''}
           ${result.propertyType ? `<div><span class="lc-k">Property type</span><span class="lc-v">${result.propertyType}</span></div>` : ''}
           ${result.collateralType ? `<div><span class="lc-k">Collateral type</span><span class="lc-v">${result.collateralType}</span></div>` : ''}
           ${result.occupancy ? `<div><span class="lc-k">Occupancy</span><span class="lc-v">${result.occupancy}</span></div>` : ''}

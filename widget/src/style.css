@@ -234,6 +234,25 @@
 .lc-chatbar-send svg{ width:16px; height:16px; stroke:var(--lc-primary-ink); transform: translateX(-1px); }
 .lc-chatbar-sticky{ position: sticky; bottom: -1px; margin-top: 14px; background: var(--lc-bg); padding-top: 10px; padding-bottom: 2px; box-shadow: 0 -8px 10px -4px var(--lc-bg); }
 
+/* ---------- typeahead search (e.g. employer lookup) ---------- */
+.lc-typeahead-wrap{ position:relative; }
+.lc-typeahead-wrap .lc-chatbar-input{
+  width:100%; background: var(--lc-panel-raised); border:1.5px solid var(--lc-line); border-radius:26px;
+  padding:11px 18px; box-sizing:border-box; transition: border-color .18s ease, box-shadow .18s ease;
+}
+.lc-typeahead-wrap .lc-chatbar-input:focus{ border-color: var(--lc-primary); box-shadow: var(--lc-glow); }
+.lc-typeahead-list{
+  margin-top:8px; display:flex; flex-direction:column; gap:6px; max-height:220px; overflow-y:auto;
+  border:1.5px solid var(--lc-line); border-radius:14px; background: var(--lc-panel-raised); padding:6px;
+}
+.lc-typeahead-item{
+  padding:10px 14px; border-radius:10px; border:none; background:transparent; text-align:left;
+  font-family:var(--lc-font-body); font-size:13px; color:var(--lc-ink); cursor:pointer;
+  transition: background .12s ease, color .12s ease;
+}
+.lc-typeahead-item:hover{ background: var(--lc-primary-soft); color: var(--lc-primary); }
+.lc-typeahead-other{ border-top:1px solid var(--lc-line); margin-top:2px; padding-top:12px; color: var(--lc-ink-soft); font-weight:600; }
+
 .lc-otp-boxes{ display:flex; gap:8px; margin-bottom:6px; }
 .lc-otp-boxes input{ width:40px; height:48px; text-align:center; font-size:18px; font-weight:700; padding:0; background: var(--lc-panel-raised); }
 

@@ -1,0 +1,150 @@
+================================================================================
+DEDUPE API
+================================================================================
+
+Base URLs:
+UAT  : https://backend.uatfinfinity.in/api/v1
+Prod : https://bev3.finfinity.co.in/api/v1
+
+Endpoint: POST /leadflow/searchcustomer
+Auth    : Bearer <JWT Token>
+Headers : Content-Type: application/json
+
+Use this API to check if a customer already exists in the system using
+PAN, mobile number, or email.
+
+
+================================================================================
+1. SEARCH CUSTOMER
+================================================================================
+
+The endpoint checks in this order:
+1. PAN number
+2. Mobile number
+3. Email address
+
+------------------------------------------------------------------------------
+REQUEST PAYLOAD - Search by PAN
+------------------------------------------------------------------------------
+{
+    "pan": "ABCDE1234F"
+}
+
+------------------------------------------------------------------------------
+REQUEST PAYLOAD - Search by Phone
+------------------------------------------------------------------------------
+{
+    "phone_number": "9876543210"
+}
+
+------------------------------------------------------------------------------
+REQUEST PAYLOAD - Search by Email
+------------------------------------------------------------------------------
+{
+    "email": "user@example.com"
+}
+
+------------------------------------------------------------------------------
+FIELD DESCRIPTIONS
+------------------------------------------------------------------------------
+| Field        | Type   | Required | Description                              |
+|--------------|--------|----------|------------------------------------------|
+| pan          | string | No*      | Valid 10-character PAN                     |
+| phone_number | string | No*      | 10-digit Indian mobile number              |
+| email        | string | No*      | Primary or official email address        |
+
+* At least one field is required.
+
+
+================================================================================
+2. RESPONSES
+================================================================================
+
+------------------------------------------------------------------------------
+SUCCESS RESPONSE - Customer Found
+------------------------------------------------------------------------------
+{
+    "data": [
+        {
+            "id": 12345,
+            "customer_name": "John Doe",
+            "first_name": "John",
+            "middle_name": "",
+            "last_name": "Doe",
+            "dob": "1990-01-01",
+            "primary_email": "user@gmail.com",
+            "primary_phone_number": "9876543210",
+            "official_email": "user@company.com",
+            "pan_number": "ABCDE1234F",
+            "service_pincode": "400001",
+            "customer_segment": "salaried",
+            "residenceStatus": 1,
+            "countryCode": "IN",
+            "nationalityId": 1
+        }
+    ],
+    "error_msg": "Customer Data Fetch Successfully",
+    "error_code": "",
+    "error_dtl": [],
+    "activity": null
+}
+
+------------------------------------------------------------------------------
+ERROR RESPONSE - Customer Not Found
+------------------------------------------------------------------------------
+{
+    "data": [],
+    "error_msg": "Customer Not Found",
+    "error_code": "CUSTOMER_NOT_FOUND",
+    "error_dtl": [],
+    "activity": null
+}
+
+------------------------------------------------------------------------------
+ERROR RESPONSE - Unexpected Server Error
+------------------------------------------------------------------------------
+{
+    "data": [],
+    "error_msg": "An unexpected error occurred",
+    "error_code": "UNEXPECTED_ERROR",
+    "error_dtl": "<exception details>",
+    "activity": null
+}
+
+
+================================================================================
+3. INTEGRATION EXAMPLE
+================================================================================
+
+POST /leadflow/searchcustomer
+Authorization: Bearer <jwt_token>
+Content-Type: application/json
+
+{
+    "pan": "ABCDE1234F"
+}
+
+
+================================================================================
+4. NOTES
+================================================================================
+
+1. Response envelope is always:
+   {
+       "data": [...],
+       "error_msg": "...",
+       "error_code": "...",
+       "error_dtl": [] or "...",
+       "activity": null
+   }
+
+2. Use error_code == "" to determine success.
+
+3. If multiple fields are sent, PAN is checked first, then phone, then email.
+
+4. Input validation rules:
+   - PAN  : ABCDE1234F format
+   - Phone: 10-digit Indian mobile number
+   - Email: standard email format
+
+================================================================================

@@ -1,0 +1,292 @@
+================================================================================
+BUREAU FETCH API
+================================================================================
+
+Base URLs:
+UAT  : https://backend.uatfinfinity.in/api/v1
+Prod : https://bev3.finfinity.co.in/api/v1
+
+Endpoints:
+POST /leadflow/generatebureau
+POST /leadflow/validatebureau
+
+Auth    : Bearer <JWT Token>
+Headers : Content-Type: application/json
+
+This API is used to fetch the customer's credit bureau score from CIBIL or
+EXPERIAN after customer creation.
+
+
+================================================================================
+FLOW
+================================================================================
+
+Step 1: Call /generatebureau with PAN + Phone + Email + Pincode
+        -> Backend creates customer and starts bureau fetch
+        -> Returns either CIBIL question OR Experian OTP response
+
+Step 2: Call /validatebureau
+        -> For CIBIL: send questionKey, answerKey, ChallengeConfigGUID
+        -> For EXPERIAN: send otp
+        -> On success: returns bureauScore + access/refresh token pair
+
+
+================================================================================
+1. GENERATE BUREAU
+================================================================================
+
+------------------------------------------------------------------------------
+REQUEST PAYLOAD
+------------------------------------------------------------------------------
+{
+    "pan": "ABCDE1234F",
+    "phone_number": "9876543210",
+    "official_email": "user@example.com",
+    "pincode": "400001",
+    "applicant_type_key": "salaried",
+    "primary_email": "user@example.com",
+    "campaign_code": "FINFINITY"
+}
+
+------------------------------------------------------------------------------
+FIELD DESCRIPTIONS
+------------------------------------------------------------------------------
+| Field             | Type   | Required | Description                           |
+|-------------------|--------|----------|---------------------------------------|
+| pan               | string | Yes      | Valid 10-character PAN                |
+| phone_number      | string | Yes      | 10-digit mobile number                |
+| official_email    | string | Yes      | Official email address                |
+| pincode           | string | Yes      | Service pincode                       |
+| applicant_type_key| string | Yes      | e.g. salaried, self_employed          |
+| primary_email     | string | No       | Primary personal email                |
+| campaign_code     | string | No       | Campaign identifier                   |
+
+------------------------------------------------------------------------------
+SUCCESS RESPONSE - CIBIL (Question-based authentication)
+------------------------------------------------------------------------------
+{
+    "data": [
+        {
+            "questionKey": "Q1-12345",
+            "answerKey": "A1-67890",
+            "ChallengeConfigGUID": "guid-12345-abcde",
+            "resendEligible": true,
+            "bureau_type": "CIBIL",
+            "otp_session_id": "550e8400-e29b-41d4-a716-446655440000",
+            "customer_id": 12345,
+            "corporate_id": "CORP12345"
+        }
+    ],
+    "error_msg": "Which of the following is your active loan account?",
+    "error_code": "CIBIL_QUESTION_QUEUE",
+    "error_dtl": [],
+    "activity": null
+}
+
+------------------------------------------------------------------------------
+SUCCESS RESPONSE - EXPERIAN (Mobile OTP)
+------------------------------------------------------------------------------
+{
+    "data": [
+        {
+            "otp_session_id": "550e8400-e29b-41d4-a716-446655440000",
+            "customer_id": 12345,
+            "corporate_id": "CORP12345",
+            "status": 200,
+            "bureau_type": "EXPERIAN"
+        }
+    ],
+    "error_msg": "We have sent an OTP to your Mobile No *****210",
+    "error_code": "",
+    "error_dtl": [],
+    "activity": null
+}
+
+------------------------------------------------------------------------------
+ERROR RESPONSE - Customer not created / Bureau not available
+------------------------------------------------------------------------------
+{
+    "data": [],
+    "error_msg": "No valid bureau score found",
+    "error_code": "NOT_FOUND",
+    "error_dtl": "Both bureaus failed",
+    "activity": null
+}
+
+
+================================================================================
+2. VALIDATE BUREAU
+================================================================================
+
+------------------------------------------------------------------------------
+REQUEST PAYLOAD - CIBIL
+------------------------------------------------------------------------------
+{
+    "customer_id": 12345,
+    "bureau": "CIBIL",
+    "otp_session_id": "550e8400-e29b-41d4-a716-446655440000",
+    "phone_number": "9876543210",
+    "questionKey": "Q1-12345",
+    "answerKey": "A1-67890",
+    "ChallengeConfigGUID": "guid-12345-abcde"
+}
+
+------------------------------------------------------------------------------
+REQUEST PAYLOAD - EXPERIAN
+------------------------------------------------------------------------------
+{
+    "customer_id": 12345,
+    "bureau": "EXPERIAN",
+    "otp_session_id": "550e8400-e29b-41d4-a716-446655440000",
+    "phone_number": "9876543210",
+    "otp": "123456"
+}
+
+------------------------------------------------------------------------------
+FIELD DESCRIPTIONS
+------------------------------------------------------------------------------
+| Field                | Type   | Required | Description                    |
+|----------------------|--------|----------|--------------------------------|
+| customer_id          | int    | Yes      | From generatebureau response   |
+| bureau               | string | Yes      | "CIBIL" or "EXPERIAN"          |
+| otp_session_id       | string | Yes      | From generatebureau response   |
+| phone_number         | string | Yes      | Customer mobile number         |
+| questionKey          | string | Yes (CIBIL) | From generatebureau      |
+| answerKey            | string | Yes (CIBIL) | From generatebureau      |
+| ChallengeConfigGUID  | string | Yes (CIBIL) | From generatebureau      |
+| otp                  | string | Yes (EXPERIAN) | OTP received on mobile |
+
+------------------------------------------------------------------------------
+SUCCESS RESPONSE - CIBIL
+------------------------------------------------------------------------------
+{
+    "data": [
+        {
+            "ReferenceKey": "CIBIL-REF-12345",
+            "bureauScore": 750,
+            "bureauType": "CIBIL"
+        },
+        {
+            "access": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+            "refresh": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+        }
+    ],
+    "error_msg": "SUCCESS",
+    "error_code": "",
+    "error_dtl": [],
+    "activity": null
+}
+
+------------------------------------------------------------------------------
+SUCCESS RESPONSE - EXPERIAN
+------------------------------------------------------------------------------
+{
+    "data": [
+        {
+            "stageOneId": "STG1-ABC123",
+            "stageTwoId": "STG2-XYZ789",
+            "bureauScore": 780,
+            "bureauType": "EXPERIAN"
+        },
+        {
+            "access": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+            "refresh": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+        }
+    ],
+    "error_msg": "SUCCESS",
+    "error_code": "",
+    "error_dtl": [],
+    "activity": null
+}
+
+------------------------------------------------------------------------------
+ERROR RESPONSE - Invalid OTP / Challenge
+------------------------------------------------------------------------------
+{
+    "data": [],
+    "error_msg": "OTP Does Not Match",
+    "error_code": "INVALID_404",
+    "error_dtl": [],
+    "activity": null
+}
+
+
+================================================================================
+3. INTEGRATION EXAMPLES
+================================================================================
+
+------------------------------------------------------------------------------
+CIBIL Flow
+------------------------------------------------------------------------------
+1. POST /leadflow/generatebureau
+   {
+       "pan": "ABCDE1234F",
+       "phone_number": "9876543210",
+       "official_email": "user@example.com",
+       "pincode": "400001",
+       "applicant_type_key": "salaried"
+   }
+
+2. Show CIBIL question to user using error_msg and options from your UI logic
+
+3. POST /leadflow/validatebureau
+   {
+       "customer_id": 12345,
+       "bureau": "CIBIL",
+       "otp_session_id": "550e8400-e29b-41d4-a716-446655440000",
+       "phone_number": "9876543210",
+       "questionKey": "Q1-12345",
+       "answerKey": "A1-67890",
+       "ChallengeConfigGUID": "guid-12345-abcde"
+   }
+
+4. On success, store access/refresh tokens and use bureauScore
+
+------------------------------------------------------------------------------
+EXPERIAN Flow
+------------------------------------------------------------------------------
+1. POST /leadflow/generatebureau
+   {
+       "pan": "ABCDE1234F",
+       "phone_number": "9876543210",
+       "official_email": "user@example.com",
+       "pincode": "400001",
+       "applicant_type_key": "salaried"
+   }
+
+2. Ask user to enter OTP sent to mobile
+
+3. POST /leadflow/validatebureau
+   {
+       "customer_id": 12345,
+       "bureau": "EXPERIAN",
+       "otp_session_id": "550e8400-e29b-41d4-a716-446655440000",
+       "phone_number": "9876543210",
+       "otp": "123456"
+   }
+
+4. On success, store access/refresh tokens and use bureauScore
+
+
+================================================================================
+4. NOTES
+================================================================================
+
+1. Response envelope is always:
+   {
+       "data": [...],
+       "error_msg": "...",
+       "error_code": "...",
+       "error_dtl": [] or "...",
+       "activity": null
+   }
+
+2. On validatebureau success, response contains both bureau result and
+   a fresh JWT token pair.
+
+3. Use error_code == "" to determine success.
+
+4. The bureau type (CIBIL/EXPERIAN) is determined by backend configuration.
+   Frontend should read bureau_type from the generatebureau response.
+
+================================================================================

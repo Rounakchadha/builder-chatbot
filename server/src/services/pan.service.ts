@@ -9,6 +9,7 @@ export interface PanIdentity {
   name: string;
   nameMasked: string;
   dob: string; // ISO date, e.g. "1990-01-12"
+  gender?: string; // "Male" / "Female" / "Other" — see getpandetail_api_payloads.txt
 }
 
 export interface PanService {
@@ -49,8 +50,10 @@ class MockPanService implements PanService {
     const dob = new Date(Date.UTC(year, month - 1, day)).toISOString().slice(0, 10);
     const name = MOCK_NAMES[idx];
 
+    const gender = Math.abs(hashCode(pan + 'gender')) % 2 === 0 ? 'Male' : 'Female';
+
     logger.info({ event: 'pan_lookup_mock', panMasked: maskPan(pan) }, 'mock PAN lookup');
-    return { name, nameMasked: maskName(name), dob };
+    return { name, nameMasked: maskName(name), dob, gender };
   }
 }
 
@@ -67,6 +70,7 @@ interface PanDetailResponse {
   pan: string;
   name: string;
   dob: string; // DD/MM/YYYY
+  gender?: string; // "Male" / "Female" / "Other"
 }
 
 /** Real PAN identity API — POST /leadflow/getpandetail. Identity only (name/DOB), same as the
@@ -87,7 +91,7 @@ class RealPanService implements PanService {
     }
     const detail = results[0]?.response;
     if (!detail) throw new Error('getpandetail returned no PAN details');
-    return { name: detail.name, nameMasked: maskName(detail.name), dob: ddmmyyyyToIso(detail.dob) };
+    return { name: detail.name, nameMasked: maskName(detail.name), dob: ddmmyyyyToIso(detail.dob), gender: detail.gender };
   }
 }
 

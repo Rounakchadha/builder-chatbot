@@ -18,3 +18,11 @@ export function initials(name: string): string {
 export function generateLeadId(): string {
   return 'LN' + Date.now().toString().slice(-6) + Math.random().toString(36).slice(2, 4).toUpperCase();
 }
+
+/** The closing line for Personal/Gold/Business loan's result step — states the lead id and RM by
+ * name so the customer knows what happens next, not just a result card with no explicit next step. */
+export function leadCreatedMessage(leadId: string | undefined, rm: { name: string }): string {
+  return leadId
+    ? `Your lead (${leadId}) has been created — ${rm.name} will be your dedicated relationship manager and will reach out to you shortly.`
+    : `${rm.name} will be your dedicated relationship manager and will reach out to you shortly.`;
+}

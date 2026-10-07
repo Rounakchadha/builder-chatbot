@@ -1,0 +1,167 @@
+================================================================================
+CREATE ANACITY LEAD API
+================================================================================
+
+Base URLs:
+UAT  : https://backend.uatfinfinity.in/api/v1
+Prod : https://bev3.finfinity.co.in/api/v1
+
+Endpoint: POST /leadflow/create_anacity_lead
+Auth    : Bearer <JWT Token>
+Headers : Content-Type: application/json
+
+Use this API to create a new application/lead for an existing customer.
+
+
+================================================================================
+1. REQUEST PAYLOAD
+================================================================================
+
+------------------------------------------------------------------------------
+Example
+------------------------------------------------------------------------------
+{
+    "customer_id": 12345,
+    "product_code": "HL",
+    "campaign_code": "FINFINITY",
+    "source": "web",
+    "device_type": "desktop"
+}
+
+------------------------------------------------------------------------------
+FIELD DESCRIPTIONS
+------------------------------------------------------------------------------
+| Field         | Type   | Required | Description                              |
+|---------------|--------|----------|------------------------------------------|
+| customer_id   | int    | Yes      | Existing customer ID                     |
+| product_code  | string | Yes      | Product code e.g. HL, LAP, PL, EL, AL    |
+| campaign_code | string | Yes      | Campaign identifier                      |
+| source        | string | No       | Source platform (web, android, ios)      |
+| device_type   | string | No       | Device type (desktop, mobile, tablet)    |
+
+
+================================================================================
+2. SUCCESS RESPONSE
+================================================================================
+
+------------------------------------------------------------------------------
+200 OK - Lead created successfully
+------------------------------------------------------------------------------
+{
+    "data": [
+        {
+            "leadid": 67890,
+            "customer_id": 12345,
+            "product_code": "HL"
+        }
+    ],
+    "error_msg": "Lead Created Successfully",
+    "error_code": "",
+    "error_dtl": [],
+    "activity": null
+}
+
+------------------------------------------------------------------------------
+RESPONSE FIELDS
+------------------------------------------------------------------------------
+| Field       | Type   | Description                            |
+|-------------|--------|----------------------------------------|
+| leadid      | int    | Newly created application/lead ID      |
+| customer_id | int    | Customer ID                            |
+| product_code| string | Product code of the lead               |
+
+
+================================================================================
+3. ERROR RESPONSES
+================================================================================
+
+------------------------------------------------------------------------------
+400 Bad Request - Missing campaign code
+------------------------------------------------------------------------------
+{
+    "data": [],
+    "error_msg": "Campaign code is required",
+    "error_code": "CAMPAIGN_CODE_REQUIRED",
+    "error_dtl": "Campaign code is required",
+    "activity": null
+}
+
+------------------------------------------------------------------------------
+400 Bad Request - Campaign not found
+------------------------------------------------------------------------------
+{
+    "data": [],
+    "error_msg": "<exception message>",
+    "error_code": "CUSTOMER_CREATION_ERROR",
+    "error_dtl": "<exception details>",
+    "activity": null
+}
+
+------------------------------------------------------------------------------
+400 Bad Request - Product not found
+------------------------------------------------------------------------------
+{
+    "data": [],
+    "error_msg": "<exception message>",
+    "error_code": "CUSTOMER_CREATION_ERROR",
+    "error_dtl": "<exception details>",
+    "activity": null
+}
+
+------------------------------------------------------------------------------
+500 Server Error
+------------------------------------------------------------------------------
+{
+    "data": [],
+    "error_msg": "Error processing UTM params",
+    "error_code": "ERR500",
+    "error_dtl": "<exception details>",
+    "activity": null
+}
+
+
+================================================================================
+4. INTEGRATION EXAMPLE
+================================================================================
+
+POST /leadflow/create_anacity_lead
+Authorization: Bearer <jwt_token>
+Content-Type: application/json
+
+{
+    "customer_id": 12345,
+    "product_code": "HL",
+    "campaign_code": "FINFINITY"
+}
+
+
+================================================================================
+5. NOTES
+================================================================================
+
+1. Response envelope is always:
+   {
+       "data": [...],
+       "error_msg": "...",
+       "error_code": "...",
+       "error_dtl": "..." or [],
+       "activity": null
+   }
+
+2. Use error_code == "" to determine success.
+
+3. This endpoint creates a lead with:
+   - internal_status = "lead_created"
+   - journey_stage = "Not-Started"
+
+4. The customer_id must be an existing customer in the system.
+
+5. After successful lead creation, the backend also triggers:
+   - SMS to customer
+   - SMS to RM
+   - Customer initiation email
+   - BPO automated dispatch (if applicable)
+
+6. Source and device_type are auto-detected from request headers if not sent.
+
+================================================================================

@@ -47,6 +47,16 @@ export class ChatApi {
     return res.json();
   }
 
+  async typeaheadSearch(searchKey: string, query: string): Promise<{ matches: string[] }> {
+    const res = await fetch(`${this.baseUrl}/api/chat/typeahead-search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ searchKey, query }),
+    });
+    if (!res.ok) return { matches: [] };
+    return res.json();
+  }
+
   async send(body: ChatMessageRequest): Promise<ChatTurnResponse> {
     const res = await fetch(`${this.baseUrl}/api/chat/message`, {
       method: 'POST',

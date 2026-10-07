@@ -1,0 +1,331 @@
+================================================================================
+GET CUSTOMER OFFERS API
+================================================================================
+
+Base URLs:
+UAT  : https://backend.uatfinfinity.in/api/v1
+Prod : https://bev3.finfinity.co.in/api/v1
+
+Endpoint: POST /leadflow/getcustomeroffers
+Auth    : Bearer <JWT Token>
+Headers : Content-Type: application/json
+
+Use this API to fetch lender offers for an existing customer or lead.
+
+Supports two flows:
+1. HL / LAP products  -> use leadid
+2. PL / EL / AL / other products -> use customer_id + product_code + campaign_code
+
+
+================================================================================
+1. HL / LAP FLOW
+================================================================================
+
+For Home Loan (HL) and Loan Against Property (LAP), provide the existing lead ID.
+The backend fetches applicant, income, property and product details from the lead.
+
+------------------------------------------------------------------------------
+REQUEST PAYLOAD
+------------------------------------------------------------------------------
+{
+    "leadid": 12345,
+    "filter": {
+        "loanType": {
+            "apfApproved": true
+        },
+        "rate": "low to high"
+    }
+}
+
+------------------------------------------------------------------------------
+FIELD DESCRIPTIONS
+------------------------------------------------------------------------------
+| Field    | Type   | Required | Description                                |
+|----------|--------|----------|--------------------------------------------|
+| leadid   | int    | Yes      | Existing HL/LAP application/lead ID          |
+| filter   | object | No       | Optional filters and sorting                 |
+
+------------------------------------------------------------------------------
+SUCCESS RESPONSE
+------------------------------------------------------------------------------
+{
+    "data": [
+        {
+            "final_lender_list": [
+                {
+                    "lender_name": "HDFC Bank",
+                    "eligibility_amount": 4500000,
+                    "rate": 8.50,
+                    "rate_linked": "Repo Linked",
+                    "emi": 38250,
+                    "tenure": 240,
+                    "ltv": 80,
+                    "apf_approved": "Yes",
+                    "Disbursal": "Quick Disbursal",
+                    "company_category": "CAT A"
+                },
+                {
+                    "lender_name": "SBI",
+                    "eligibility_amount": 4200000,
+                    "rate": 8.60,
+                    "rate_linked": "Repo Linked",
+                    "emi": 36500,
+                    "tenure": 240,
+                    "ltv": 75,
+                    "apf_approved": "No",
+                    "Disbursal": "Normal",
+                    "company_category": "CAT A"
+                }
+            ],
+            "rejected_lender_list": [
+                {
+                    "lender_name": "ICICI Bank",
+                    "rejection_reason": "Bureau score below threshold"
+                }
+            ]
+        }
+    ],
+    "error_msg": "Offers fetched successfully",
+    "error_code": "",
+    "error_dtl": [],
+    "activity": null
+}
+
+
+================================================================================
+2. PL / EL / AL / OTHER PRODUCTS FLOW
+================================================================================
+
+For Personal Loan (PL), Education Loan (EL), Auto Loan (AL), etc., provide the
+existing customer ID, product code, and campaign code.
+The backend fetches income, obligations and bureau score from the customer.
+
+------------------------------------------------------------------------------
+REQUEST PAYLOAD
+------------------------------------------------------------------------------
+{
+    "customer_id": 12345,
+    "product_code": "PL",
+    "campaign_code": "FINFINITY",
+    "filter": {
+        "loanAmount": "high to low",
+        "rate": "low to high"
+    }
+}
+
+------------------------------------------------------------------------------
+FIELD DESCRIPTIONS
+------------------------------------------------------------------------------
+| Field         | Type   | Required | Description                            |
+|---------------|--------|----------|----------------------------------------|
+| customer_id   | int    | Yes      | Existing customer ID                     |
+| product_code  | string | Yes      | e.g. PL, EL, AL, BL, ILP                 |
+| campaign_code | string | Yes      | Campaign identifier                      |
+| filter        | object | No       | Optional filters and sorting             |
+
+------------------------------------------------------------------------------
+SUCCESS RESPONSE
+------------------------------------------------------------------------------
+{
+    "data": [
+        {
+            "digital_lender_list": [
+                {
+                    "lender_name": "HDFC Bank",
+                    "eligibility_amount": 500000,
+                    "rate": 11.50,
+                    "emi": 11000,
+                    "tenure": 60,
+                    "resume": false,
+                    "journey_stage": "lead-journey"
+                }
+            ],
+            "rest_lender_list": [
+                {
+                    "lender_name": "Axis Bank",
+                    "eligibility_amount": 450000,
+                    "rate": 12.00,
+                    "emi": 10500,
+                    "tenure": 60,
+                    "resume": false
+                }
+            ],
+            "rejected_lender_list": [
+                {
+                    "lender_name": "ICICI Bank",
+                    "rejection_reason": "Bureau score below threshold"
+                }
+            ],
+            "exec_status": "completed"
+        }
+    ],
+    "error_msg": "Fetch Successfull",
+    "error_code": "",
+    "error_dtl": [],
+    "activity": null
+}
+
+
+================================================================================
+3. OPTIONAL FILTER OBJECT
+================================================================================
+
+------------------------------------------------------------------------------
+HL / LAP Filter Options
+------------------------------------------------------------------------------
+{
+    "filter": {
+        "loanType": {
+            "repoLinked": true,
+            "apfApproved": true,
+            "quickDisbursal": true,
+            "instantDisbursal": true,
+            "all": true
+        },
+        "loanAmount": "high to low",
+        "rate": "low to high"
+    }
+}
+
+------------------------------------------------------------------------------
+PL / EL / AL Filter Options
+------------------------------------------------------------------------------
+{
+    "filter": {
+        "loanAmount": "high to low",
+        "rate": "low to high"
+    }
+}
+
+------------------------------------------------------------------------------
+FILTER OPTIONS
+------------------------------------------------------------------------------
+| Option                      | Values                        | Description                    |
+|-----------------------------|-------------------------------|--------------------------------|
+| loanType.repoLinked         | true / false                  | Repo-linked interest rate (HL/LAP) |
+| loanType.apfApproved        | true / false                  | APF-approved project lenders (HL/LAP) |
+| loanType.quickDisbursal     | true / false                  | Quick disbursal lenders (HL/LAP) |
+| loanType.instantDisbursal   | true / false                  | Instant disbursal lenders (HL/LAP) |
+| loanType.all                | true / false                  | Show all lenders (HL/LAP)      |
+| loanAmount                  | "high to low" / "low to high" | Sort by eligible amount        |
+| rate                        | "high to low" / "low to high" | Sort by interest rate          |
+
+
+================================================================================
+4. ERROR RESPONSES
+================================================================================
+
+------------------------------------------------------------------------------
+400 Bad Request - Missing required input
+------------------------------------------------------------------------------
+{
+    "data": {},
+    "error_msg": "Lead ID is required",
+    "error_code": "MISSING_LEADID",
+    "error_dtl": "leadid is a required field",
+    "activity": null
+}
+
+------------------------------------------------------------------------------
+Hygiene Check Failed
+------------------------------------------------------------------------------
+{
+    "data": {},
+    "error_msg": "<hygiene rejection reason>",
+    "error_code": "<hygiene error code>",
+    "error_dtl": "",
+    "activity": null
+}
+
+------------------------------------------------------------------------------
+Eligibility Engine Error
+------------------------------------------------------------------------------
+{
+    "data": {},
+    "error_msg": "<eligibility error message>",
+    "error_code": "ELIGIBILITY_ERROR",
+    "error_dtl": "",
+    "activity": null
+}
+
+------------------------------------------------------------------------------
+500 Server Error
+------------------------------------------------------------------------------
+{
+    "data": {},
+    "error_msg": "Error processing customer offers",
+    "error_code": "PROCESSING_ERROR",
+    "error_dtl": "<exception details>",
+    "activity": null
+}
+
+
+================================================================================
+5. INTEGRATION EXAMPLES
+================================================================================
+
+------------------------------------------------------------------------------
+HL / LAP Example
+------------------------------------------------------------------------------
+POST /leadflow/getcustomeroffers
+Authorization: Bearer <jwt_token>
+Content-Type: application/json
+
+{
+    "leadid": 12345,
+    "filter": {
+        "loanType": {
+            "apfApproved": true
+        },
+        "rate": "low to high"
+    }
+}
+
+------------------------------------------------------------------------------
+PL Example
+------------------------------------------------------------------------------
+POST /leadflow/getcustomeroffers
+Authorization: Bearer <jwt_token>
+Content-Type: application/json
+
+{
+    "customer_id": 12345,
+    "product_code": "PL",
+    "campaign_code": "FINFINITY",
+    "filter": {
+        "loanAmount": "high to low"
+    }
+}
+
+
+================================================================================
+6. NOTES
+================================================================================
+
+1. Response envelope is always:
+   {
+       "data": {...} or [...],
+       "error_msg": "...",
+       "error_code": "...",
+       "error_dtl": "..." or [],
+       "activity": null
+   }
+
+2. Use error_code == "" to determine success.
+
+3. HL / LAP response contains:
+   - final_lender_list
+   - rejected_lender_list
+
+4. PL / EL / AL / other products response contains:
+   - digital_lender_list
+   - rest_lender_list
+   - rejected_lender_list
+   - exec_status
+
+5. For PL/EL/AL products, lenders may include resume flags if the customer
+   already has an in-progress application with that lender.
+
+6. For HL/LAP, APF-approved lenders are sorted to the top automatically.
+
+================================================================================

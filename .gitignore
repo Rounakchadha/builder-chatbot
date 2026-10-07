@@ -4,3 +4,13 @@ dist/
 *.log
 .DS_Store
 server/prisma/dev.db
+
+# Raw source spreadsheets — already extracted into server/src/data/*.json, which IS committed.
+*.xlsx
+
+# Claude Code's own local session state, not project content.
+.claude/
+
+# Contains a real test customer's PII (name/PAN/mobile/email/DOB/income/CIBIL score) captured from
+# a live UAT test transcript — never commit this.
+cibil_profile.txt

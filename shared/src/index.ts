@@ -31,6 +31,32 @@ export const CHECK_EXISTING_APPLICATION = 'Check an existing application';
 export const SEGMENTS = ['Salaried', 'Business owner', 'Self-employed professional'] as const;
 export type Segment = (typeof SEGMENTS)[number];
 
+// The flat list on the existing "what are you looking for" question (homeLoan.ts's 'product'
+// step). Home loan/Loan against property continue into the existing, unchanged flow (including
+// the Fresh purchase vs Balance transfer sub-choice that follows); the other three branch into
+// their own short flows right after this question (see flows/personalLoan.ts etc.).
+export const PRODUCT_OPTIONS = ['Home loan', 'Loan against property', 'Personal loan', 'Gold loan', 'Business loan'] as const;
+export type ProductOption = (typeof PRODUCT_OPTIONS)[number];
+
+// ---------- Personal loan ----------
+export const QUALIFICATION_TYPES = ['Below 10th', '10th pass', '12th pass', 'Graduate', 'Post-graduate', 'Professional/Doctorate'] as const;
+
+export const RESIDENCE_TYPES = ['Owned', 'Rented', 'Family owned'] as const;
+
+// ---------- Gold loan ----------
+export const GOLD_TYPES = ['Jewellery', 'Coin', 'Bars'] as const;
+
+export const GOLD_PURITY_OPTIONS = ['18k', '20k', '22k', '24k', 'Not sure'] as const;
+
+export const GOLD_LOAN_PURPOSES = ['Personal need', 'Medical', 'Education', 'Business', 'Agriculture', 'Wedding', 'Other'] as const;
+
+// ---------- Business loan ----------
+export const BUSINESS_LOAN_PURPOSES = ['Working capital', 'Machinery purchase', 'Expansion', 'Inventory purchase'] as const;
+
+export const BUSINESS_TYPES = ['Proprietorship', 'Partnership', 'LLP', 'Private limited', 'Public limited', 'OPC'] as const;
+
+export const INDUSTRY_TYPES = ['Manufacturing', 'Trading', 'Services'] as const;
+
 export const LOAN_TYPES: Record<string, string[]> = {
   'Home loan': ['Fresh purchase', 'Balance transfer (BT)'],
   'Loan against property': ['Property purchase', 'Loan against property (LAP)', 'Balance transfer (BT)'],
@@ -57,6 +83,13 @@ export const InputSpec = z.discriminatedUnion('type', [
   z.object({ type: z.literal('number'), placeholder: z.string().optional(), min: z.number().optional() }),
   z.object({ type: z.literal('text'), placeholder: z.string().optional(), maxLength: z.number().optional() }),
   z.object({ type: z.literal('pan') }),
+  // Native date picker — e.g. Business loan's date of incorporation. `max` (YYYY-MM-DD) stops the
+  // customer picking a future date; the widget also enforces it natively via the input's own max attr.
+  z.object({ type: z.literal('date'), max: z.string().optional() }),
+  // Type-to-search against a large server-side list (e.g. the employer master) — the widget calls
+  // /api/chat/typeahead-search as the customer types and shows matches, plus an always-present
+  // "Other" option for anything not found. See flows/personalLoan.ts's plEmployer step.
+  z.object({ type: z.literal('typeahead'), placeholder: z.string().optional(), searchKey: z.string() }),
   z.object({ type: z.literal('none') }), // e.g. while an apiFetch is loading, or the terminal result step
 ]);
 export type InputSpec = z.infer<typeof InputSpec>;
@@ -113,7 +146,8 @@ export interface EligibilityResultPayload {
   name?: string;
   product: string;
   loanType: string;
-  segment: Segment;
+  // Optional because Gold loan doesn't ask for an employment segment at all (see flows/goldLoan.ts).
+  segment?: Segment;
   creditScore?: number;
   propertyType?: string;
   collateralType?: string;

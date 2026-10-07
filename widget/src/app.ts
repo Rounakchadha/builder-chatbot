@@ -503,6 +503,12 @@ export class ChatWidget {
       case 'choice':
         this.renderChoiceComposer(resp.stepId, input.options, input.layout);
         break;
+      case 'typeahead':
+        this.renderTypeaheadComposer(resp.stepId, input.searchKey, input.placeholder);
+        break;
+      case 'date':
+        this.renderChatBar(resp.stepId, { type: 'date', max: input.max });
+        break;
       case 'none':
         break;
     }
@@ -513,7 +519,7 @@ export class ChatWidget {
    * than filling out a labeled form field. */
   private renderChatBar(
     stepId: string,
-    opts: { type: string; placeholder?: string; maxLength?: number; inputMode?: string; uppercase?: boolean },
+    opts: { type: string; placeholder?: string; maxLength?: number; inputMode?: string; uppercase?: boolean; max?: string },
   ) {
     const wrap = document.createElement('div');
     wrap.className = 'lc-chatbar';
@@ -525,6 +531,7 @@ export class ChatWidget {
     if (opts.maxLength) input.maxLength = opts.maxLength;
     if (opts.inputMode) input.inputMode = opts.inputMode as any;
     if (opts.uppercase) input.style.textTransform = 'uppercase';
+    if (opts.max) input.max = opts.max;
     input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') submit();
     });
@@ -563,6 +570,66 @@ export class ChatWidget {
       wrap.appendChild(btn);
     }
     this.composerEl.appendChild(wrap);
+  }
+
+  /** Type-to-search against a large server-side list (e.g. the employer master) — debounced search
+   * as the customer types, a dropdown of matches to pick from, and an always-present "Others"
+   * option for anything not found. Selecting either submits immediately, same as a choice button. */
+  private renderTypeaheadComposer(stepId: string, searchKey: string, placeholder?: string) {
+    const wrap = document.createElement('div');
+    wrap.className = 'lc-typeahead-wrap';
+
+    const input = document.createElement('input');
+    input.className = 'lc-chatbar-input';
+    input.type = 'text';
+    input.placeholder = placeholder ? `${placeholder}…` : 'Type to search…';
+
+    const list = document.createElement('div');
+    list.className = 'lc-typeahead-list';
+    list.style.display = 'none';
+
+    const renderList = (matches: string[]) => {
+      list.innerHTML = '';
+      for (const match of matches) {
+        const item = document.createElement('button');
+        item.className = 'lc-typeahead-item';
+        item.textContent = match;
+        item.onclick = () => this.submitUserValue(stepId, match, match);
+        list.appendChild(item);
+      }
+      const other = document.createElement('button');
+      other.className = 'lc-typeahead-item lc-typeahead-other';
+      other.textContent = "Others (not listed)";
+      other.onclick = () => this.submitUserValue(stepId, 'Others', 'Others');
+      list.appendChild(other);
+      list.style.display = 'block';
+      // The list growing taller doesn't move the panel's own scroll position — without this, the
+      // newly shown matches can render below the fold, looking like nothing appeared at all.
+      this.scrollDown();
+    };
+
+    let debounceTimer: ReturnType<typeof setTimeout> | undefined;
+    input.addEventListener('input', () => {
+      const query = input.value.trim();
+      if (debounceTimer) clearTimeout(debounceTimer);
+      if (query.length < 2) {
+        list.style.display = 'none';
+        return;
+      }
+      debounceTimer = setTimeout(async () => {
+        try {
+          const { matches } = await this.api.typeaheadSearch(searchKey, query);
+          renderList(matches);
+        } catch {
+          renderList([]); // still show the "Others" fallback even if the search itself failed
+        }
+      }, 250);
+    });
+
+    wrap.appendChild(input);
+    wrap.appendChild(list);
+    this.composerEl.appendChild(wrap);
+    input.focus();
   }
 
   /** The status-check branch otherwise dead-ends after reporting the lead's status — this gives a

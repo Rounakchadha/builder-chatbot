@@ -1,0 +1,156 @@
+================================================================================
+GET PAN DETAIL API
+================================================================================
+
+Base URLs:
+UAT  : https://backend.uatfinfinity.in/api/v1
+Prod : https://bev3.finfinity.co.in/api/v1
+
+Endpoint: POST /leadflow/getpandetail
+Auth    : Bearer <JWT Token>
+Headers : Content-Type: application/json
+
+Use this API to fetch PAN holder details from the external PAN verification
+service and save them in the system.
+
+
+================================================================================
+1. REQUEST PAYLOAD
+================================================================================
+
+------------------------------------------------------------------------------
+REQUEST PAYLOAD
+------------------------------------------------------------------------------
+{
+    "panNumber": "ABCDE1234F"
+}
+
+------------------------------------------------------------------------------
+FIELD DESCRIPTIONS
+------------------------------------------------------------------------------
+| Field     | Type   | Required | Description                 |
+|-----------|--------|----------|-----------------------------|
+| panNumber | string | Yes      | Valid 10-character PAN number |
+
+
+================================================================================
+2. SUCCESS RESPONSE
+================================================================================
+
+------------------------------------------------------------------------------
+200 OK - PAN details fetched successfully
+------------------------------------------------------------------------------
+{
+    "data": [
+        {
+            "response": {
+                "pan": "ABCDE1234F",
+                "name": "John Doe",
+                "gender": "Male",
+                "dob": "01/01/1990",
+                "typeOfHolder": "Individual",
+                "maskedAadhaar": "XXXX-XXXX-1234"
+            }
+        }
+    ],
+    "error_msg": "Data saved successfully",
+    "error_code": "",
+    "error_dtl": [],
+    "activity": null
+}
+
+------------------------------------------------------------------------------
+RESPONSE FIELDS
+------------------------------------------------------------------------------
+| Field         | Type   | Description                              |
+|---------------|--------|------------------------------------------|
+| pan           | string | PAN number                               |
+| name          | string | Full name as per PAN                     |
+| gender        | string | Male / Female / Other                    |
+| dob           | string | Date of birth (DD/MM/YYYY)               |
+| typeOfHolder  | string | Holder type (e.g. Individual)            |
+| maskedAadhaar | string | Masked Aadhaar number if available       |
+
+
+================================================================================
+3. ERROR RESPONSES
+================================================================================
+
+------------------------------------------------------------------------------
+400 Bad Request - Missing PAN
+------------------------------------------------------------------------------
+{
+    "data": [],
+    "error_msg": "Missing panNumber parameter",
+    "error_code": "KEY404",
+    "error_dtl": [],
+    "activity": null
+}
+
+------------------------------------------------------------------------------
+400 Bad Request - Invalid PAN format
+------------------------------------------------------------------------------
+{
+    "data": [],
+    "error_msg": "Invalid pan number format.",
+    "error_code": "ERR404",
+    "error_dtl": [],
+    "activity": null
+}
+
+------------------------------------------------------------------------------
+422 Unprocessable - External PAN service error
+------------------------------------------------------------------------------
+{
+    "data": [],
+    "error_msg": "<external error message>",
+    "error_code": "<status code>",
+    "error_dtl": [],
+    "activity": null
+}
+
+------------------------------------------------------------------------------
+500 Server Error
+------------------------------------------------------------------------------
+{
+    "data": [],
+    "error_msg": "Error in data extraction",
+    "error_code": "ERR404",
+    "error_dtl": "<exception details>",
+    "activity": null
+}
+
+
+================================================================================
+4. INTEGRATION EXAMPLE
+================================================================================
+
+POST /leadflow/getpandetail
+Authorization: Bearer <jwt_token>
+Content-Type: application/json
+
+{
+    "panNumber": "ABCDE1234F"
+}
+
+
+================================================================================
+5. NOTES
+================================================================================
+
+1. Response envelope is always:
+   {
+       "data": [...],
+       "error_msg": "...",
+       "error_code": "...",
+       "error_dtl": "..." or [],
+       "activity": null
+   }
+
+2. PAN number must be in valid format: ABCDE1234F (5 letters + 4 digits + 1 letter)
+
+3. On success, PAN details are saved/updated in the PAN database.
+
+4. Use error_code == "" to determine success.
+
+================================================================================

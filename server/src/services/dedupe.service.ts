@@ -21,6 +21,16 @@ export interface DedupeMatch {
   pincode?: string;
   segment?: string;
   creditScore?: number;
+  /** "Male" / "Female" / "Other" — NOT actually present on searchcustomer (confirmed live,
+   * 2026-10-05: a real found customer's response had no gender key at all, just id/customer_name/
+   * first_name/middle_name/last_name/dob/primary_email/primary_phone_number/official_email/
+   * pan_number/service_pincode/customer_segment/residenceStatus/countryCode/nationalityId/
+   * bureau_score/bureau_type/bureau_fetch_date/need_refresh/need_consent). Kept here (always
+   * undefined for now) only so a found customer falls through to the same gender question a
+   * not-found customer would hit if getpandetail ever didn't have it either — see
+   * flows/personalLoan.ts's plGender step. getpandetail (pan.service.ts) DOES document a real
+   * `gender` field for the not-found branch; this one doesn't. */
+  gender?: string;
   /** 'bureau' | 'experian' — which bureau creditScore came from, same naming as BureauPull.source.
    * Only ever set by the real service (searchcustomer); undefined on the mock. */
   bureauSource?: 'bureau' | 'experian';
@@ -61,6 +71,7 @@ export interface DuplicateMatch {
   email?: string;
   pincode?: string;
   segment?: string;
+  gender?: string;
   creditScore?: number;
 }
 
@@ -196,6 +207,7 @@ interface SearchCustomerResult {
   pan_number?: string;
   service_pincode?: string;
   customer_segment?: string;
+  gender?: string;
   // Confirmed live against UAT (2026-09-30) — searchcustomer now also returns whatever bureau score
   // is already on file for this customer, instead of nothing at all (see the old comment this
   // replaced). bureau_type mirrors BureauPull.source's 'CIBIL'/'EXPERIAN' naming, not our own
@@ -241,6 +253,7 @@ class RealDedupeService implements DedupeService {
         email: match.official_email || match.primary_email,
         pincode: match.service_pincode,
         segment: mapRemoteSegment(match.customer_segment),
+        gender: match.gender,
         creditScore: match.bureau_score,
         bureauSource: mapBureauType(match.bureau_type),
         bureauFetchDate: match.bureau_fetch_date,
@@ -296,6 +309,7 @@ class RealDedupeService implements DedupeService {
         email: match.official_email || match.primary_email,
         pincode: match.service_pincode,
         segment: mapRemoteSegment(match.customer_segment),
+        gender: match.gender,
       };
     } catch (err) {
       if (err instanceof FinfinityApiError && err.code === 'CUSTOMER_NOT_FOUND') return null;

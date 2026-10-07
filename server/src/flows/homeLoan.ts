@@ -1,4 +1,4 @@
-import { CHECK_ELIGIBILITY, CHECK_EXISTING_APPLICATION, COLLATERAL_TYPES, LOAN_TYPES, PROPERTY_TYPES, SEGMENTS, type EligibilityResultPayload } from '@loan-chatbot/shared';
+import { CHECK_ELIGIBILITY, CHECK_EXISTING_APPLICATION, COLLATERAL_TYPES, LOAN_TYPES, PRODUCT_OPTIONS, PROPERTY_TYPES, SEGMENTS, type EligibilityResultPayload } from '@loan-chatbot/shared';
 import type { Answers, FlowDefinition, StepContext } from '../flow-engine/types';
 import { encryptPii, hmacLookup, maskMobile, maskPan } from '../lib/crypto';
 import { escapeHtml } from '../lib/escapeHtml';
@@ -680,6 +680,7 @@ export const homeLoanFlow: FlowDefinition = {
           email: match.email,
           pincode: match.pincode,
           segment: match.segment,
+          gender: match.gender,
           creditScore,
           // Captured for later — not yet acted on anywhere in the flow (still deciding how
           // needsBureauRefresh/needsBureauConsent should change behavior; see DedupeMatch's doc
@@ -727,7 +728,7 @@ export const homeLoanFlow: FlowDefinition = {
       input: () => ({ type: 'none' }),
       onAnswer: async (_parsed, ctx) => {
         const identity = await panService.lookup(ctx.answers.pan as string, ctx.answers.finfinityAccessToken as string | undefined);
-        return { name: identity.nameMasked, fullName: identity.name, dob: identity.dob };
+        return { name: identity.nameMasked, fullName: identity.name, dob: identity.dob, gender: identity.gender };
       },
     },
     // ---------- PAN-collision guard (not-found branch only) ----------
@@ -1243,11 +1244,13 @@ export const homeLoanFlow: FlowDefinition = {
       type: 'choice',
       progressLabel: 'Choosing a product',
       isApplicable: (ctx) => isEligibilityIntent(ctx.answers),
-      botMessage: () => 'What are you looking for — a home loan, or a loan against property?',
-      hint: () => 'Both are available to you.',
-      input: () => ({ type: 'choice', options: ['Home loan', 'Loan against property'], layout: 'column' }),
-      validate: (value, ctx) =>
-        validateChoice(ctx, 'product', ['Home loan', 'Loan against property'], value, 'Is this for a home loan, or a loan against property?'),
+      botMessage: () => 'What are you looking for?',
+      input: () => ({ type: 'choice', options: [...PRODUCT_OPTIONS], layout: 'column' }),
+      // Personal loan/Gold loan/Business loan branch into their own short flows right after this
+      // step (see flows/index.ts, which splices flows/personalLoan.ts etc. in here) — everything
+      // below in this file (loanType onward) only ever runs for Home loan/Loan against property,
+      // same as before this step gained the three extra options.
+      validate: (value, ctx) => validateChoice(ctx, 'product', [...PRODUCT_OPTIONS], value, `Which of these is it: ${PRODUCT_OPTIONS.join(', ')}?`),
     },
     {
       id: 'loanType',

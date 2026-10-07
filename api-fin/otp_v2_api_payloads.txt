@@ -1,0 +1,289 @@
+================================================================================
+OTP API
+================================================================================
+
+Base URLs:
+UAT  : https://backend.uatfinfinity.in/api/v1
+Prod : https://bev3.finfinity.co.in/api/v1
+
+Endpoints:
+POST /leadflow/generateotpv2
+POST /leadflow/validateotpv2
+
+Auth    : None (public endpoints)
+Headers : Content-Type: application/json
+
+Use this API to send and verify OTP for customer signup/login.
+On successful validation with creation_type, a new customer is created and
+a JWT token pair is returned.
+
+
+================================================================================
+FLOW
+================================================================================
+
+Step 1: Call /generateotpv2 with mobile number or email
+        -> OTP is sent to the given recipient
+
+Step 2: Call /validateotpv2 with recipient + otp + creation_type
+        -> If OTP is valid and customer does not exist, a new customer is created
+        -> Returns customer_id and access/refresh token pair
+
+
+================================================================================
+1. GENERATE OTP v2
+================================================================================
+
+------------------------------------------------------------------------------
+REQUEST PAYLOAD - Mobile
+------------------------------------------------------------------------------
+{
+    "recipient": "9876543210"
+}
+
+------------------------------------------------------------------------------
+REQUEST PAYLOAD - Email
+------------------------------------------------------------------------------
+{
+    "recipient": "user@example.com"
+}
+
+------------------------------------------------------------------------------
+FIELD DESCRIPTIONS
+------------------------------------------------------------------------------
+| Field         | Type    | Required | Description                              |
+|---------------|---------|----------|------------------------------------------|
+| recipient     | string  | Yes      | Mobile number OR email address           |
+| otp_length    | integer | No       | OTP length (4 or 6). Defaults to 6       |
+| campaign_code | string  | No       | Journey/campaign identifier              |
+
+------------------------------------------------------------------------------
+SUCCESS RESPONSE
+------------------------------------------------------------------------------
+{
+    "data": [
+        {
+            "resend_eligible": true,
+            "resend_otp_timer": 60,
+            "otp_response": 200
+        }
+    ],
+    "error_msg": "We have sent an OTP to your Mobile No *****210",
+    "error_code": "",
+    "error_dtl": [],
+    "activity": null
+}
+
+------------------------------------------------------------------------------
+ERROR RESPONSE - Account locked
+------------------------------------------------------------------------------
+{
+    "data": [
+        {
+            "resend_eligible": false,
+            "resend_otp_timer": 0,
+            "otp_response": -1
+        }
+    ],
+    "error_msg": "Account is locked. Please try again after 30 minutes",
+    "error_code": "LOCKOUT015",
+    "error_dtl": [],
+    "activity": null
+}
+
+------------------------------------------------------------------------------
+ERROR RESPONSE - Resend cooldown
+------------------------------------------------------------------------------
+{
+    "data": [
+        {
+            "resend_eligible": false,
+            "resend_otp_timer": 45,
+            "otp_response": 200
+        }
+    ],
+    "error_msg": "Please wait 45 sec before resending OTP",
+    "error_code": "OTPWAIT",
+    "error_dtl": [],
+    "activity": null
+}
+
+------------------------------------------------------------------------------
+ERROR RESPONSE - Invalid / missing recipient
+------------------------------------------------------------------------------
+{
+    "data": [-1],
+    "error_msg": "Invalid mobile number or email address",
+    "error_code": "KEY404",
+    "error_dtl": [],
+    "activity": null
+}
+
+
+================================================================================
+2. VALIDATE OTP v2 + CREATE TEMP CUSTOMER
+================================================================================
+
+------------------------------------------------------------------------------
+REQUEST PAYLOAD - Create customer via Mobile
+------------------------------------------------------------------------------
+{
+    "recipient": "9876543210",
+    "otp": "123456",
+    "creation_type": "MOBILE",
+    "campaign_code": "FINFINITY"
+}
+
+------------------------------------------------------------------------------
+REQUEST PAYLOAD - Create customer via Email
+------------------------------------------------------------------------------
+{
+    "recipient": "user@example.com",
+    "otp": "123456",
+    "creation_type": "EMAIL",
+    "campaign_code": "FINFINITY"
+}
+
+------------------------------------------------------------------------------
+FIELD DESCRIPTIONS
+------------------------------------------------------------------------------
+| Field         | Type    | Required | Description                              |
+|---------------|---------|----------|------------------------------------------|
+| recipient     | string  | Yes      | Mobile number OR email address           |
+| otp           | string  | Yes      | OTP received                             |
+| creation_type | string  | Yes      | "MOBILE" or "EMAIL"                      |
+| campaign_code | string  | No       | Campaign identifier                        |
+
+------------------------------------------------------------------------------
+SUCCESS RESPONSE - Temp customer created
+------------------------------------------------------------------------------
+{
+    "data": [
+        {
+            "customer_id": 12345,
+            "corporate_id": "CORP12345"
+        },
+        {
+            "access": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+            "refresh": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+        }
+    ],
+    "error_msg": "Customer Created Successfully",
+    "error_code": "CUST_NOT_EXIST",
+    "error_dtl": [],
+    "activity": null
+}
+
+------------------------------------------------------------------------------
+ERROR RESPONSE - Customer already exists
+------------------------------------------------------------------------------
+{
+    "data": [],
+    "error_msg": "Customer Already Exists with given detail",
+    "error_code": "FOUND404",
+    "error_dtl": [],
+    "activity": null
+}
+
+------------------------------------------------------------------------------
+ERROR RESPONSE - Invalid OTP
+------------------------------------------------------------------------------
+{
+    "data": [
+        {
+            "otp_response": -1
+        }
+    ],
+    "error_msg": "Invalid OTP",
+    "error_code": "OTP401",
+    "error_dtl": [],
+    "activity": null
+}
+
+------------------------------------------------------------------------------
+ERROR RESPONSE - OTP expired
+------------------------------------------------------------------------------
+{
+    "data": [
+        {
+            "otp_response": -1
+        }
+    ],
+    "error_msg": "The OTP has expired. Please generate a new one.",
+    "error_code": "OTP_EXPIRED",
+    "error_dtl": [],
+    "activity": null
+}
+
+
+================================================================================
+3. INTEGRATION EXAMPLES
+================================================================================
+
+------------------------------------------------------------------------------
+Signup / Login with Mobile
+------------------------------------------------------------------------------
+1. POST /leadflow/generateotpv2
+   {
+       "recipient": "9876543210"
+   }
+
+2. User receives OTP
+
+3. POST /leadflow/validateotpv2
+   {
+       "recipient": "9876543210",
+       "otp": "123456",
+       "creation_type": "MOBILE"
+   }
+
+4. Response contains customer_id + access/refresh tokens
+
+------------------------------------------------------------------------------
+Signup / Login with Email
+------------------------------------------------------------------------------
+1. POST /leadflow/generateotpv2
+   {
+       "recipient": "user@example.com"
+   }
+
+2. User receives OTP
+
+3. POST /leadflow/validateotpv2
+   {
+       "recipient": "user@example.com",
+       "otp": "123456",
+       "creation_type": "EMAIL"
+   }
+
+4. Response contains customer_id + access/refresh tokens
+
+
+================================================================================
+4. NOTES
+================================================================================
+
+1. Response envelope is always:
+   {
+       "data": [...],
+       "error_msg": "...",
+       "error_code": "...",
+       "error_dtl": [] or "...",
+       "activity": null
+   }
+
+2. Use error_code == "" to determine success.
+
+3. On validate success:
+   - If customer already exists, backend returns existing customer data + tokens
+   - If customer does not exist and creation_type is provided, new customer is
+     created and tokens are returned
+
+4. Lockout rules:
+   - max attempts = 3
+   - lockout duration = 30 minutes
+   - OTP validity = 10 minutes
+   - max resend attempts = 3
+   - resend cooldown = 60 seconds
+
+================================================================================

@@ -134,6 +134,13 @@ class RealLeadService implements LeadService {
    * "Apartment/Flat" -> their "apartment/flat") — applying that pattern to property_type too, since
    * it wasn't shown non-blank in their example. */
   async updateLead(leadId: string, financials: LeadFinancials, token?: string): Promise<void> {
+    // seller_type/completion_status/carpet_area are collected for Finfinity's record-keeping only
+    // — never asked of the customer, never shown to them, and not used in our own eligibility math.
+    // Per Ritendra: always send "builder" for seller_type (even though "individual" is a valid
+    // option) and a fixed carpet_area of 1000. completion_status is "completed" unless the chosen
+    // property/collateral is a plot, in which case it's "yet_to_start" (a plot has nothing built yet).
+    const isPlot = /plot/i.test(financials.propertyType ?? '') || /plot/i.test(financials.collateralType ?? '');
+
     await finfinityClient.post(
       '/leadflow/updatelead',
       {
@@ -148,6 +155,9 @@ class RealLeadService implements LeadService {
         occupancy_type: financials.occupancy?.toLowerCase().replace(/[^a-z]+/g, '_'),
         collateral_type: financials.collateralType?.toLowerCase(),
         property_value: financials.propertyValue,
+        seller_type: 'builder',
+        completion_status: isPlot ? 'yet_to_start' : 'completed',
+        carpet_area: '1000',
       },
       { token },
     );

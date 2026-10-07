@@ -2,11 +2,13 @@ import type { FastifyInstance } from 'fastify';
 import { ChatMessageRequest, CHECK_ELIGIBILITY, CHECK_EXISTING_APPLICATION, type ChatTurnResponse } from '@loan-chatbot/shared';
 import { applicablePath, getStep, nextStepId, renderStep } from '../flow-engine/engine';
 import type { StepContext } from '../flow-engine/types';
-import { homeLoanFlow, recomputeEligibility, createLeadFromResult } from '../flows/homeLoan';
+import { mainFlow } from '../flows';
+import { recomputeEligibility, createLeadFromResult } from '../flows/homeLoan';
 import { EDITABLE_FIELDS, isEditableField, isFieldEditableNow, PROFILE_FIELDS } from '../flows/editableFields';
 import { createSession, loadSession, persistAnswer, advanceCurrentStep, saveSession, logMessage, type SessionState } from '../services/session.service';
 import { smsService } from '../services/sms.service';
 import { recallIdentity } from '../services/identity.service';
+import { searchEmployers } from '../services/employer.service';
 import { hmacLookup, maskMobile, maskPan } from '../lib/crypto';
 import { logger } from '../lib/logger';
 import { UserFacingError } from '../lib/userFacingError';
@@ -14,7 +16,7 @@ import { prisma } from '../lib/prisma';
 import { redis } from '../lib/redis';
 import { z } from 'zod';
 
-const FLOW = homeLoanFlow;
+const FLOW = mainFlow;
 
 function toCtx(state: SessionState, ip: string, userAgent?: string): StepContext {
   return { answers: state.answers, conversationId: state.conversationId, meta: { ip, userAgent } };
@@ -123,17 +125,25 @@ async function runOnAnswer(stepId: string, parsed: unknown, ctx: StepContext): P
  * call site that might render the 'result' step goes through this so the payload is never forgotten. */
 function render(stepId: string, sessionToken: string, ctx: StepContext, errorText?: string): ChatTurnResponse {
   const response = renderStep(FLOW, stepId, sessionToken, ctx, errorText);
-  if (stepId === 'result' && ctx.answers.intent === CHECK_ELIGIBILITY) {
+  // Checked by step TYPE (not the literal id "result") so every product's own terminal step — each
+  // has its own unique id, e.g. 'plResult'/'glResult'/'blResult' (see flows/personalLoan.ts etc.) —
+  // gets the same treatment as homeLoan.ts's 'result' step, without homeLoan.ts needing to know
+  // these other flows exist.
+  const isResultType = getStep(FLOW, stepId).type === 'result';
+  if (isResultType && ctx.answers.intent === CHECK_ELIGIBILITY) {
     response.result = ctx.answers.resultPayload;
-    // Offer to share PAN for a lead/RM follow-up only when it wasn't already shared/on file (and
-    // hasn't already been shared via this same offer) — computeResultPayload only auto-creates a
-    // lead when a PAN was already known, so this is the one path back to a lead for everyone else.
-    response.panOffer = !ctx.answers.pan;
+    // Offer to share PAN for a lead/RM follow-up only when no lead exists yet — computeResultPayload
+    // only auto-creates a home-loan lead when a PAN was already known, so this is the one path back
+    // to a lead for everyone else. Personal/Gold/Business loan always set leadCreated: true (their
+    // lead/offers are mocked, but always "created") by the time their own result step renders, so
+    // this naturally stays false for them — no PAN-share prompt after an already-"created" lead.
+    const payload = ctx.answers.resultPayload as { leadCreated?: boolean } | undefined;
+    response.panOffer = !payload?.leadCreated;
     // The no-contact-consent branch never asked for a mobile number either — the offer needs to
     // collect one too before a lead/RM follow-up is even possible.
     response.panOfferNeedsMobile = !ctx.answers.mobile;
   }
-  if (stepId === 'result' && ctx.answers.intent === CHECK_EXISTING_APPLICATION) {
+  if (isResultType && ctx.answers.intent === CHECK_EXISTING_APPLICATION) {
     // The status branch otherwise dead-ends here — offer a way back into either flow instead of
     // leaving "Start over" (which re-asks the intent question) as the only option.
     response.statusCheck = true;
@@ -422,5 +432,16 @@ export async function chatRoutes(app: FastifyInstance) {
     const ctx = toCtx(state, req.ip, req.headers['user-agent']);
     const fields = PROFILE_FIELDS.map((f) => ({ key: f.key, label: f.label, editable: f.editable(ctx), value: f.format(ctx) })).filter((f) => f.value !== '');
     return reply.send({ fields });
+  });
+
+  // Backs every 'typeahead'-type step's input (see InputSpec in shared) — `searchKey` picks which
+  // server-side list to search; add a new entry here when a second typeahead-backed field shows up.
+  const TYPEAHEAD_SEARCHERS: Record<string, (query: string) => string[]> = { employer: searchEmployers };
+  const TypeaheadSearchRequest = z.object({ searchKey: z.string(), query: z.string() });
+  app.post('/api/chat/typeahead-search', async (req, reply) => {
+    const body = TypeaheadSearchRequest.parse(req.body ?? {});
+    const search = TYPEAHEAD_SEARCHERS[body.searchKey];
+    if (!search) return reply.code(400).send({ error: 'unknown_search_key' });
+    return reply.send({ matches: search(body.query) });
   });
 }

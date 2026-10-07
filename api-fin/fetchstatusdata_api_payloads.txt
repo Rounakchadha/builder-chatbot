@@ -1,0 +1,148 @@
+================================================================================
+FETCH APPLICATION STATUS DATA API
+================================================================================
+
+Base URLs:
+UAT  : https://backend.uatfinfinity.in/api/v1
+Prod : https://bev3.finfinity.co.in/api/v1
+
+Endpoint: GET /leadflow/fetchstatusdata/<id>
+Auth    : Bearer <JWT Token>
+Headers : Content-Type: application/json
+
+Use this API to fetch the internal status and related details of a specific
+application/lead.
+
+The <id> in the URL is the application/lead ID.
+
+
+================================================================================
+1. REQUEST
+================================================================================
+
+------------------------------------------------------------------------------
+Example
+------------------------------------------------------------------------------
+GET /leadflow/fetchstatusdata/12345
+Authorization: Bearer <jwt_token>
+Content-Type: application/json
+
+No request body required.
+
+
+================================================================================
+2. SUCCESS RESPONSE
+================================================================================
+
+------------------------------------------------------------------------------
+200 OK
+------------------------------------------------------------------------------
+{
+    "data": [
+        {
+            "remarks": "Application under review",
+            "assign_to": 789,
+            "statusData": {
+                "id": 45,
+                "key": "application_accepted",
+                "value": "Application Accepted",
+                "metadata_type": "LeadStatus",
+                "metadata_name": "Application Accepted",
+                "description": null
+            },
+            "bpData": {
+                "id": 12,
+                "bp_name": "ABC Finance",
+                "email": "abc@example.com",
+                "phone_number": "9876543210",
+                "status": 1
+            },
+            "lenderData": {
+                "id": 56,
+                "lender_name": "HDFC Bank",
+                "email": "hdfc@example.com",
+                "status": 1
+            }
+        }
+    ],
+    "error_msg": "",
+    "error_code": "",
+    "error_dtl": [],
+    "activity": null
+}
+
+------------------------------------------------------------------------------
+RESPONSE FIELDS
+------------------------------------------------------------------------------
+| Field      | Type    | Description                                  |
+|------------|---------|----------------------------------------------|
+| remarks    | string  | Internal remarks on the application          |
+| assign_to  | int     | User ID the application is assigned to       |
+| statusData | object  | Internal status metadata from LeadStatus       |
+| bpData     | object  | Business partner details                     |
+| lenderData | object  | Lender email send details                    |
+
+------------------------------------------------------------------------------
+STATUS DATA FIELDS
+------------------------------------------------------------------------------
+| Field         | Type    | Description                              |
+|---------------|---------|------------------------------------------|
+| id            | int     | Status metadata ID                         |
+| key           | string  | Status key (e.g. application_accepted)   |
+| value         | string  | Status display value                       |
+| metadata_type | string  | Always "LeadStatus" for status data        |
+| metadata_name | string  | Display name of status                     |
+| description   | string  | Description if available                   |
+
+
+================================================================================
+3. ERROR RESPONSES
+================================================================================
+
+------------------------------------------------------------------------------
+404 Not Found - Application/Lead does not exist
+------------------------------------------------------------------------------
+{
+    "data": [],
+    "error_msg": "No Data Found",
+    "error_code": "404",
+    "error_dtl": [],
+    "activity": null
+}
+
+------------------------------------------------------------------------------
+500 Server Error
+------------------------------------------------------------------------------
+{
+    "data": [],
+    "error_msg": "Error in fetching the data",
+    "error_code": "CUSTSRV152",
+    "error_dtl": "<exception details>",
+    "activity": null
+}
+
+
+================================================================================
+4. NOTES
+================================================================================
+
+1. Response envelope is always:
+   {
+       "data": [...],
+       "error_msg": "...",
+       "error_code": "...",
+       "error_dtl": [] or "...",
+       "activity": null
+   }
+
+2. Use error_code == "" to determine success.
+
+3. The <id> parameter is the application/lead ID (ApplicationModel primary key).
+
+4. statusData is derived from ApplicationModel.internal_status_id and maps to
+   MetadataParameterModel with metadata_type="LeadStatus".
+
+5. bpData and lenderData may be empty if no business partner or lender is
+   associated with the application.
+
+================================================================================

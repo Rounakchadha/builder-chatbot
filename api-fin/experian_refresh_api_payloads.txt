@@ -1,0 +1,86 @@
+================================================================================
+EXPERIAN REFRESH API
+================================================================================
+
+Base URLs:
+UAT  : https://backend.uatfinfinity.in/api/v1
+Prod : https://bev3.finfinity.co.in/api/v1
+
+Endpoints:
+POST /leadflow/experianapi
+POST /leadflow/get_customer_assets
+
+Auth    : Bearer <JWT Token>
+Headers : Content-Type: application/json
+
+Used to pull a fresh Experian score (a separate bureau from CIBIL) when the
+score on file in dedupe is stale (e.g. more than a month old). NOT yet wired
+into the app — pending the equivalent CIBIL refresh endpoint before the
+"score is stale, refresh it" logic can be designed for both bureaus together.
+
+
+================================================================================
+1. EXPERIAN API
+================================================================================
+
+------------------------------------------------------------------------------
+REQUEST PAYLOAD
+------------------------------------------------------------------------------
+{
+    "pan": "LBFPS6246H",
+    "mobileNo": "9718639729",
+    "firstName": "RITENDRA",
+    "surName": "SINGH",
+    "email": "",
+    "experian_refresh": true
+}
+
+------------------------------------------------------------------------------
+FIELD DESCRIPTIONS
+------------------------------------------------------------------------------
+| Field            | Type    | Required | Description                                    |
+|------------------|---------|----------|------------------------------------------------|
+| pan              | string  | Yes      | Valid 10-character PAN                          |
+| mobileNo         | string  | Yes      | 10-digit mobile number                          |
+| firstName        | string  | Yes      | Customer's first name                           |
+| surName          | string  | Yes      | Customer's surname                              |
+| email            | string  | No       | Can be sent empty                               |
+| experian_refresh | boolean | Yes      | true = force a fresh Experian pull; false = use whatever's already on file |
+
+
+================================================================================
+2. GET CUSTOMER ASSETS
+================================================================================
+
+------------------------------------------------------------------------------
+REQUEST PAYLOAD
+------------------------------------------------------------------------------
+{
+    "customer_id": 123,
+    "fetch_type": "refresh"
+}
+
+------------------------------------------------------------------------------
+FIELD DESCRIPTIONS
+------------------------------------------------------------------------------
+| Field       | Type   | Required | Description                                 |
+|-------------|--------|----------|---------------------------------------------|
+| customer_id | number | Yes      | The real backend's own customer id           |
+| fetch_type  | string | Yes      | "refresh" to force a fresh pull              |
+
+
+================================================================================
+3. NOTES / OPEN QUESTIONS
+================================================================================
+
+1. Response shapes for both endpoints not yet documented — need a sample
+   success/error response before wiring these into bureau.service.ts.
+2. Still need the CIBIL-side refresh endpoint before "credit score is >1
+   month old, refresh it" can be built for both bureaus consistently.
+3. searchcustomer (dedupe) does not yet document returning any credit score
+   field at all (see searchcustomer_api_payloads.txt) — confirm the exact
+   field name + a sample response with the backend team before dedupe.service.ts
+   is changed to read a score (and its "as of" date, needed for the staleness
+   check) out of that response.
+
+================================================================================
