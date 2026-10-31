@@ -650,8 +650,12 @@ export class ChatWidget {
       // settle first (ARRIVAL_ANIMATION_MS, kept in sync with style.css's la-message-arrive
       // duration) before starting the type-out fixes that; a plain setTimeout rather than this row's
       // own 'animationend' event, since prefers-reduced-motion disables the animation entirely (no
-      // animationend would ever fire) but typing should still happen either way.
-      setTimeout(() => this.typeOutBubble(bubble, wasNearBottom), ARRIVAL_ANIMATION_MS);
+      // animationend would ever fire) but typing should still happen either way. +20ms, not the
+      // exact same duration, so this timer doesn't fire in the identical tick as the animationend
+      // listener right above (removing the .is-new class, tearing down its will-change compositing
+      // layer) — two unrelated style/DOM changes landing in the same frame is its own small source
+      // of jank, separate from (and in addition to) the per-frame typing cost fixed below.
+      setTimeout(() => this.typeOutBubble(bubble, wasNearBottom), ARRIVAL_ANIMATION_MS + 20);
     }
   }
 
@@ -686,22 +690,30 @@ export class ChatWidget {
     const originals = textNodes.map((t) => t.data);
     textNodes.forEach((t) => (t.data = ''));
 
-    // Slowed down slightly (2026-10-31: "decrease its speed a little bit") and, more importantly,
-    // fixed a real perf bug that was likely the actual source of the reported lag/glitch: every
-    // frame was calling the full scrollDown() (itself scheduling a SECOND, nested rAF) purely to set
-    // scrollTop = scrollHeight — reading scrollHeight and writing scrollTop both force a synchronous
-    // layout, so that was two forced reflows on top of the text mutation's own reflow, every ~16ms
-    // for the animation's whole duration. Now scrolls inline (no nested rAF) and only every 4th
-    // frame — following the bubble's growth doesn't need to happen literally every frame to look
-    // smooth, and this cuts the forced-reflow count by ~75%.
-    const maxDurationMs = 550;
-    const minPerCharMs = 11;
+    // Slowed down further (2026-10-31: "slow it down a little bit") and throttled to ~24fps instead
+    // of updating on literally every animation frame (~60fps) — still ran down even after only
+    // throttling the scroll-follow call, because the actual TEXT mutation itself (node.data = ...)
+    // forces a layout reflow for that bubble on every write, and that was still happening every
+    // single frame regardless of the scroll fix. Updating the DOM only every ~42ms instead of every
+    // ~16ms cuts the number of forced reflows by more than half; at normal reading speed this reveals
+    // 1-2 characters per update either way, so it doesn't look any less smooth.
+    const maxDurationMs = 750;
+    const minPerCharMs = 14;
+    const UPDATE_INTERVAL_MS = 42;
     const totalDuration = Math.min(maxDurationMs, totalChars * minPerCharMs);
     const start = performance.now();
-    let frame = 0;
+    let lastUpdate = 0;
     const step = (now: number) => {
-      frame++;
       const elapsed = now - start;
+      const isLastFrame = elapsed >= totalDuration;
+      // Always write the final frame (so the message never visibly stops short of complete), but
+      // otherwise skip this frame entirely if the last DOM write was too recent — no text-node
+      // mutation, no scroll, no reflow at all on skipped frames.
+      if (!isLastFrame && now - lastUpdate < UPDATE_INTERVAL_MS) {
+        requestAnimationFrame(step);
+        return;
+      }
+      lastUpdate = now;
       const revealed = Math.min(totalChars, Math.round((elapsed / totalDuration) * totalChars));
       let remaining = revealed;
       for (const [i, node] of textNodes.entries()) {
@@ -710,10 +722,7 @@ export class ChatWidget {
         remaining -= len;
         if (remaining <= 0) break;
       }
-      const isLastFrame = revealed >= totalChars;
-      if (followScroll && !this.suppressAutoScrollFollow && (frame % 4 === 0 || isLastFrame)) {
-        this.bodyEl.scrollTop = this.bodyEl.scrollHeight;
-      }
+      if (followScroll && !this.suppressAutoScrollFollow) this.bodyEl.scrollTop = this.bodyEl.scrollHeight;
       if (!isLastFrame) requestAnimationFrame(step);
     };
     requestAnimationFrame(step);
