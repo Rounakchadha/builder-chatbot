@@ -128,6 +128,10 @@ export class ChatWidget {
   private sessionToken: string | null = null;
   private started = false;
   private resultCardShown = false;
+  /** See scrollToResultTop's and typeOutBubble's own doc comments — lets a definitive "scroll to
+   * here" moment (the result card arriving) cancel a bot-reply typing animation's own per-frame
+   * scroll-following still in flight, instead of the two fighting over where the view ends up. */
+  private suppressAutoScrollFollow = false;
   /** Set by submitUserValue when a submission (currently: OTP) shouldn't add its chat bubble until
    * we actually know it was accepted — an OTP retry loop would otherwise leave a stack of
    * identical, uninformative "••••••" bubbles in the log for every wrong attempt. Consumed (shown,
@@ -516,6 +520,11 @@ export class ChatWidget {
   }
 
   private scrollToResultTop() {
+    // Stops any bot-reply typing animation still mid-flight (e.g. the "you're eligible" message
+    // shown right before this) from re-dragging the view back to the bottom on its own later frames
+    // — see typeOutBubble's own doc comment for the full bug this caused (2026-10-31: "drags the
+    // screen to the end... where the RM is... have to scroll up to see the main cards").
+    this.suppressAutoScrollFollow = true;
     requestAnimationFrame(() => {
       // Geometry-based instead of scrollIntoView (2026-10-31 fix) — scrollIntoView was confirmed
       // landing at the very BOTTOM of the chat (the RM card) instead of the result card's own top,
@@ -576,6 +585,15 @@ export class ChatWidget {
    * and a long paragraph both finish within the same short window, just at different per-character
    * speeds. */
   private typeOutBubble(bubble: HTMLElement, followScroll: boolean) {
+    // Bug fixed 2026-10-31: this animation used to call scrollDown() on every one of its ~25 frames
+    // (up to 420ms) whenever followScroll was true. When the bot message immediately before a result
+    // card was still mid-typing at the exact moment scrollToResultTop() ran (always true — both fire
+    // within the same synchronous renderTurn pass), those later frames kept re-forcing the view back
+    // to the absolute bottom (the RM card) every ~16ms, overriding scrollToResultTop's one-time
+    // correction almost as soon as it landed — the customer ended up at the bottom regardless.
+    // Reset at the start of every new bubble's typing so a normal reply (never followed by a result)
+    // keeps smoothly following its own growth as before; scrollToResultTop flips it back on.
+    this.suppressAutoScrollFollow = false;
     const walker = document.createTreeWalker(bubble, NodeFilter.SHOW_TEXT);
     const textNodes: Text[] = [];
     let full = '';
@@ -603,7 +621,7 @@ export class ChatWidget {
         remaining -= len;
         if (remaining <= 0) break;
       }
-      if (followScroll) this.scrollDown();
+      if (followScroll && !this.suppressAutoScrollFollow) this.scrollDown();
       if (revealed < totalChars) requestAnimationFrame(step);
     };
     requestAnimationFrame(step);
