@@ -292,7 +292,7 @@ export class ChatWidget {
       </div>
       <div class="la-layout">
         <div class="la-main">
-          <div class="la-chat" role="log" aria-live="polite" aria-relevant="additions" aria-label="Loan conversation"></div>
+          <div class="la-chat" role="log" aria-live="polite" aria-relevant="additions" aria-label="Loan conversation"><div class="la-chat-spacer" aria-hidden="true"></div></div>
           <section class="la-composer" aria-label="Your response"></section>
         </div>
         <div class="la-details-overlay">
@@ -541,6 +541,17 @@ export class ChatWidget {
     requestAnimationFrame(() => {
       this.resultContainerEl.scrollIntoView({ block: 'start', behavior: 'auto' });
     });
+  }
+
+  /** Wipes the chat log back to empty (Start over, session-expired recovery, etc.) — always leaves
+   * the .la-chat-spacer placeholder as the first child (see its own CSS doc comment: it's what keeps
+   * a short conversation bottom-aligned WITHOUT `justify-content:flex-end` on the scroll container
+   * itself, which is what actually caused "once it goes down it doesn't go up" — confirmed 2026-10-31
+   * to affect other browsers/devices even though it never reproduced on Mac Safari). Call this
+   * instead of setting chatLogEl.innerHTML = '' directly, or a fresh conversation loses the spacer
+   * and the flex-end bug it exists to avoid would effectively come right back. */
+  private resetChatLog() {
+    this.chatLogEl.innerHTML = '<div class="la-chat-spacer" aria-hidden="true"></div>';
   }
 
   // Message markup/classes below (.la-message/.la-avatar/.la-bubble) are copied verbatim from
@@ -1219,9 +1230,11 @@ export class ChatWidget {
    * somehow rendered) are disabled rather than removed, so the chat history stays intact but can't
    * submit a stale answer against a step the conversation has already moved past. */
   private renderChoiceComposer(stepId: string, options: string[], _layout: 'row' | 'column') {
-    if (this.activeChoiceEl) {
-      this.activeChoiceEl.querySelectorAll<HTMLButtonElement>('button').forEach((b) => (b.disabled = true));
-    }
+    // An earlier, still-unanswered question's pills (if a newer question somehow rendered before
+    // the customer picked one) are removed outright, not just disabled — a grayed-out dead button
+    // sitting in the chat log read as broken UI, not history (2026-10-31: "what is this man??").
+    // The question text itself (in its own bot bubble, appended separately) still stays visible.
+    this.activeChoiceEl?.remove();
     const wasNearBottom = this.isNearBottom();
     const wrap = document.createElement('div');
     wrap.className = 'la-chat-options';
@@ -1231,7 +1244,7 @@ export class ChatWidget {
       btn.type = 'button';
       btn.textContent = option;
       btn.onclick = () => {
-        wrap.querySelectorAll<HTMLButtonElement>('button').forEach((b) => (b.disabled = true));
+        wrap.remove();
         if (this.activeChoiceEl === wrap) this.activeChoiceEl = null;
         this.submitUserValue(stepId, option, option);
       };
@@ -1340,7 +1353,7 @@ export class ChatWidget {
     this.panOfferResolved = null;
     this.statusActionsShown = false;
     this.activeChoiceEl = null;
-    this.chatLogEl.innerHTML = '';
+    this.resetChatLog();
     this.clearComposer();
     try {
       const start = await this.api.send({});
@@ -1678,7 +1691,7 @@ export class ChatWidget {
         safeRemoveItem(STORAGE_KEY);
         this.sessionToken = null;
         this.activeChoiceEl = null;
-        this.chatLogEl.innerHTML = '';
+        this.resetChatLog();
         return this.start();
       }
       this.renderFatalError(describeApiError(err, 'Sorry, something went wrong on our end. Please try again in a moment.'));
@@ -1754,7 +1767,7 @@ export class ChatWidget {
     this.panOfferResolved = null;
     this.statusActionsShown = false;
     this.activeChoiceEl = null;
-    this.chatLogEl.innerHTML = '';
+    this.resetChatLog();
     if (this.progressStepEl) this.progressStepEl.textContent = 'GETTING STARTED';
     if (this.progressPctEl) this.progressPctEl.textContent = '0% complete';
     if (this.segmentsEl) {
