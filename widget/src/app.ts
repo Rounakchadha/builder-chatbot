@@ -310,19 +310,23 @@ export class ChatWidget {
                  Kept as direct siblings (not wrapped in CIS's own extra .la-details-content div) so
                  every existing .la-sidebar>... CSS rule for the fields below keeps matching. -->
             <!-- Wrapped together (2026-10-31 fix: "ur details and cross button should stay static
-                 if i swipe down my details till the bottom") so the heading/subtext pin to the top
-                 of the sheet's own scroll area via position:sticky (mobile only) while just the
-                 fields list underneath scrolls — see .la-sheet-sticky-top's own CSS doc comment.
-                 The close button stays a sibling, not inside this wrapper: it's already
-                 position:absolute relative to .la-sidebar itself (unaffected by internal scroll
-                 either way), and keeping it out avoids fighting the wrapper's own z-index/background
-                 for no benefit. -->
+                 if i swipe down my details till the bottom") so the heading/subtext/close button
+                 pin to the top of the sheet's own scroll area via position:sticky (mobile only)
+                 while just the fields list underneath scrolls — see .la-sheet-sticky-top's own CSS
+                 doc comment. The close button was ORIGINALLY left as a sibling, on the assumption
+                 that position:absolute relative to .la-sidebar would already keep it static during
+                 scroll regardless — that assumption was wrong: an absolutely-positioned element's
+                 containing block being a SCROLLING ancestor doesn't exempt it from scrolling WITH
+                 that ancestor's content (only position:sticky/fixed do that), so it was moving up
+                 with the page too (2026-10-31 follow-up report). Moved inside the sticky wrapper,
+                 which is itself position:relative so the button's absolute offsets now resolve
+                 against the sticky wrapper's own (now-pinned) box instead. -->
             <div class="la-sheet-sticky-top">
               <div class="la-sheet-handle" aria-hidden="true"></div>
+              <button type="button" class="la-details-close" aria-label="Close your details">${ICON.close}</button>
               <h2 class="la-details-heading">Your details</h2>
               <p class="la-details-subtext">Saved automatically as you go</p>
             </div>
-            <button type="button" class="la-details-close" aria-label="Close your details">${ICON.close}</button>
             <div class="la-sidebar-fields"></div>
             <p class="la-powered">Powered by finfinity</p>
             <!-- Real logo version of the header's "Powered by" badge, shown only at phone width —

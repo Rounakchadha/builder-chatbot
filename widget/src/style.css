@@ -1456,6 +1456,11 @@
      already used on its own, so the wrapper's background can mask content scrolling behind it edge
      to edge rather than leaving the original 20px insets visible as gaps. */
   .la-sheet-sticky-top{position:sticky;top:0;z-index:2;background:var(--la-bg);margin:0 -20px;padding:0 20px}
+  /* The close button is now nested INSIDE this wrapper (see app.ts's markup comment) — a
+     position:sticky element already establishes a containing block for absolutely-positioned
+     descendants on its own (same as relative/absolute/fixed do), so no extra property is needed
+     for the close button's position:absolute to resolve against this now-pinned box instead of
+     .la-sidebar's, which scrolls with its content regardless of a child's own position. */
   .la-details-close{position:absolute;top:22px;right:14px;width:34px;height:34px;border:0;border-radius:50%;background:rgba(0,0,0,.06);color:var(--la-muted);display:grid;place-items:center;cursor:pointer;padding:0;z-index:3}
   .la-details-close svg{width:16px;height:16px;stroke:currentColor}
   .la-sidebar .la-details-heading{margin-right:42px}
