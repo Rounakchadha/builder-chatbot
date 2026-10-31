@@ -4,7 +4,7 @@ import { parseAmount } from '../lib/parseAmount';
 import { validateChoice } from '../lib/validateChoice';
 import { maskMobile, maskPan } from '../lib/crypto';
 import { mockOffersForAmount } from './mockOffers';
-import { leadService, type LeadSyncResult } from '../services/lead.service';
+import { ensureLeadOnce, type LeadSyncResult } from '../services/lead.service';
 
 /** A recap of everything collected, shown once right before the final result (lead id + RM) —
  * same spirit as homeLoan.ts's buildProfileSummary. */
@@ -83,8 +83,9 @@ export const goldLoanSteps: StepDefinition[] = [
     botMessage: () => null,
     input: () => ({ type: 'none' }),
     onAnswer: async (_parsed, ctx): Promise<{ glLeadResult: LeadSyncResult }> => {
-      const glLeadResult = await leadService.createLead({
+      const glLeadResult = await ensureLeadOnce({
         conversationId: ctx.conversationId,
+        rawPan: ctx.answers.pan as string,
         panMasked: maskPan(ctx.answers.pan as string),
         name: ctx.answers.name as string | undefined,
         mobileMasked: ctx.answers.mobile ? maskMobile(ctx.answers.mobile as string) : undefined,

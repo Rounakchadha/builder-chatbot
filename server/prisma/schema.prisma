@@ -110,10 +110,26 @@ model Lead {
   builderSyncStatus String       @default("pending") // pending | synced | failed
   createdAt         DateTime     @default(now())
 
+  // Added 2026-10-31 (bug fix): "Start over"/a brand-new session for a RETURNING real customer had
+  // no way to tell "this exact person already has a real lead for this exact product" across
+  // conversations — Lead.conversationId's uniqueness only ever stopped a SECOND lead within the
+  // SAME conversation. remoteCustomerId is the real Finfinity backend's own customer_id (always set
+  // for a real, non-mock customer — see ctx.answers.remoteCustomerId), which stays the same across
+  // every conversation for the same person, unlike the local mock-only Customer.id. product is the
+  // flow's own product string (e.g. "Home loan", "Personal Loan") — every product branch lives in
+  // ONE shared Conversation.flowId, so flowId alone can't distinguish them. Together these let
+  // ensureLeadOnce (lead.service.ts) find and reuse an already-created real lead instead of calling
+  // create_anacity_lead (and triggering a fresh RM-assignment email to Sparsh) a second time for the
+  // same person+product.
+  remoteCustomerId Int?
+  product          String?
+
   // Security-review finding, 2026-10-23: listApplications (routes/chat.ts) and ensureLead's own
   // P2002-recovery lookup both query by builderLeadId-adjacent patterns and by this id directly in
   // status lookups — no index meant a full table scan as Lead rows grow.
   @@index([builderLeadId])
+  // ensureLeadOnce's cross-conversation dedupe query, added 2026-10-31 — see remoteCustomerId above.
+  @@index([remoteCustomerId, product])
 }
 
 /// Personal Loan only (2026-10-21) — every time the real Finfinity financer chain computes offers,

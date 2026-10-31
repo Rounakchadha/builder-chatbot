@@ -15,7 +15,7 @@ import { dedupeService, type DuplicateMatch } from '../services/dedupe.service';
 import { eligibilityService } from '../services/eligibility.service';
 import { homeLoanEligibilityService, mapSegmentToHlEmploymentType, mapPropertyTypeToHl, HL_LENDER_DISPLAY_NAME, type HlEligibilityFacts, type HlLenderEligibility } from '../services/homeLoanEligibility.service';
 import { lenderNamesMatch } from './personalLoan';
-import { leadService, PRODUCT_CODE } from '../services/lead.service';
+import { ensureLeadOnce, leadService, PRODUCT_CODE } from '../services/lead.service';
 import { panService } from '../services/pan.service';
 import { pincodeService } from '../services/pincode.service';
 import { smsService, enforceDuplicateVerifyRateLimit } from '../services/sms.service';
@@ -430,65 +430,30 @@ async function ensureLead(
   info: { pan: string; name?: string; creditScore?: number; product: string; loanType: string },
   opts?: { syncFullProfile?: boolean },
 ): Promise<{ builderLeadId: string | null; rm?: { name: string; phone: string; email: string } }> {
-  // Idempotency fix (security-review finding, 2026-10-23): this used to call the real
-  // create_anacity_lead API unconditionally every time it ran, with no check for "didn't this
-  // conversation already get a lead?" — a double-click, a retried request after a network blip, or
-  // "Try again" after an earlier failure all created a SECOND real lead with Finfinity, and the
-  // local prisma.lead.create() right after it would then throw on Lead.conversationId's unique
-  // constraint (since the FIRST successful run had already inserted one), leaving the conversation
-  // permanently stuck erroring on every future attempt. Checked first now, with a catch below for
-  // the remaining race (two requests reaching here at the exact same instant) rather than relying
-  // on the check alone, which a true race could still slip past.
-  const existing = await prisma.lead.findUnique({ where: { conversationId: ctx.conversationId } });
-  let builderLeadId = existing?.builderLeadId ?? null;
-  let rm: { name: string; phone: string; email: string } | undefined;
-
-  if (!existing) {
-    const result = await leadService.createLead({
-      conversationId: ctx.conversationId,
-      panMasked: maskPan(info.pan),
-      name: info.name,
-      mobileMasked: ctx.answers.mobile ? maskMobile(ctx.answers.mobile as string) : undefined,
-      creditScore: info.creditScore as number,
-      product: info.product,
-      loanType: info.loanType,
-      remoteCustomerId: ctx.answers.remoteCustomerId as number | undefined,
-      token: ctx.answers.finfinityAccessToken as string | undefined,
-    });
-    builderLeadId = result.builderLeadId;
-    rm = result.rm;
-    try {
-      await prisma.lead.create({
-        data: {
-          conversationId: ctx.conversationId,
-          panEncrypted: encryptPii(info.pan),
-          panMasked: maskPan(info.pan),
-          nameEncrypted: info.name ? encryptPii(info.name) : null,
-          creditScore: info.creditScore ?? null,
-          builderLeadId: result.builderLeadId,
-          builderSyncStatus: result.status,
-        },
-      });
-    } catch (err) {
-      // P2002 = unique constraint violation — a genuinely concurrent second request won this same
-      // race and already inserted the row a moment ago. The real lead this branch just created with
-      // Finfinity is now an orphan duplicate on their side (unavoidable once two real API calls were
-      // already in flight), but at least our own local state recovers instead of crashing: fall back
-      // to whichever row actually won.
-      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
-        const winner = await prisma.lead.findUnique({ where: { conversationId: ctx.conversationId } });
-        builderLeadId = winner?.builderLeadId ?? builderLeadId;
-      } else {
-        throw err;
-      }
-    }
-  }
+  // Idempotency (security-review finding, 2026-10-23, extended 2026-10-31): ensureLeadOnce (see its
+  // own doc comment in lead.service.ts) covers both "this exact conversation already has a lead"
+  // (a double-click, a retried request after a network blip) AND "this real customer already has a
+  // lead for this product from an earlier conversation" (Start over / a reload / reopening the
+  // widget), reusing the existing real lead either way instead of creating a duplicate.
+  const result = await ensureLeadOnce({
+    conversationId: ctx.conversationId,
+    rawPan: info.pan,
+    panMasked: maskPan(info.pan),
+    name: info.name,
+    mobileMasked: ctx.answers.mobile ? maskMobile(ctx.answers.mobile as string) : undefined,
+    creditScore: info.creditScore as number,
+    product: info.product,
+    loanType: info.loanType,
+    remoteCustomerId: ctx.answers.remoteCustomerId as number | undefined,
+    token: ctx.answers.finfinityAccessToken as string | undefined,
+  });
+  const builderLeadId = result.builderLeadId;
 
   if (opts?.syncFullProfile && builderLeadId) {
     await syncLeadFinancials(ctx, builderLeadId, info.pan, info.loanType);
   }
 
-  return { builderLeadId, rm };
+  return { builderLeadId, rm: result.rm };
 }
 
 /** Pushes the customer's current profile + loan financials onto an already-created real lead —

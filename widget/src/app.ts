@@ -492,15 +492,42 @@ export class ChatWidget {
     }
   }
 
+  /** Was the customer already scrolled near the bottom before new content arrived? Call this BEFORE
+   * appending anything — checking after would already include the new content's own height in the
+   * gap, making a long message look like "they scrolled away" even when they were really at the
+   * true bottom a moment ago. */
+  private isNearBottom(thresholdPx = 120): boolean {
+    return this.bodyEl.scrollHeight - this.bodyEl.scrollTop - this.bodyEl.clientHeight < thresholdPx;
+  }
+
   private scrollDown() {
     requestAnimationFrame(() => {
       this.bodyEl.scrollTop = this.bodyEl.scrollHeight;
     });
   }
 
+  /** Auto-scroll fix (2026-10-31: "scroll up kabhi kabhi nahi horaha", "summary bohot tez neeche
+   * chala jaa raha without the customer able to see it and fir scroll bhi nahi horaha") — every bot
+   * reply used to force-scroll to the bottom unconditionally, fighting a customer who'd scrolled up
+   * to re-read something. Only follows new content down if they were already at the bottom (same
+   * pattern every normal chat app uses); a deliberate scroll-up is respected and left alone. */
+  private scrollDownIfPinned(wasNearBottom: boolean) {
+    if (wasNearBottom) this.scrollDown();
+  }
+
   private scrollToResultTop() {
     requestAnimationFrame(() => {
-      this.resultContainerEl.scrollIntoView({ block: 'start', behavior: 'auto' });
+      // Geometry-based instead of scrollIntoView (2026-10-31 fix) — scrollIntoView was confirmed
+      // landing at the very BOTTOM of the chat (the RM card) instead of the result card's own top,
+      // on a real deployed phone, even though the identical code reliably scrolled to the right
+      // place on desktop — some nested-scroll-container quirk scrollIntoView has on mobile Safari.
+      // Computing the delta via getBoundingClientRect and setting scrollTop directly (the same
+      // mechanism scrollDown() above already uses, which the customer confirmed DOES work correctly
+      // on the real device, just at the wrong target) sidesteps that entirely.
+      const containerRect = this.resultContainerEl.getBoundingClientRect();
+      const bodyRect = this.bodyEl.getBoundingClientRect();
+      const delta = containerRect.top - bodyRect.top;
+      this.bodyEl.scrollTop = Math.max(0, this.bodyEl.scrollTop + delta - 8);
     });
   }
 
@@ -512,6 +539,8 @@ export class ChatWidget {
     row.innerHTML = `<div class="la-bubble"></div>`;
     row.querySelector('.la-bubble')!.textContent = text;
     this.chatLogEl.appendChild(row);
+    // Always forced, not scrollDownIfPinned — sending a message is the customer's own action, so
+    // following it to the bottom is always expected, never a "fight" against a manual scroll-up.
     this.scrollDown();
   }
 
@@ -519,28 +548,75 @@ export class ChatWidget {
     // No typing-indicator swap (removed 2026-10-29) — a two-step "empty bubble, wait, replace
     // with real bubble" render was the actual source of every bubble-flicker bug reported this
     // session (CSS cascade conflicts in the intermediate empty state kept resurfacing in subtly
-    // different ways no matter how many times that CSS was fixed/deduplicated). Previous widget
-    // never had an artificial typing delay either — show the real message immediately instead.
+    // different ways no matter how many times that CSS was fixed/deduplicated). The bubble's DOM
+    // node is still never swapped — the typewriter effect below (2026-10-31) only ever grows text
+    // already sitting inside the final, already-correct markup, so that bug class can't recur.
+    const wasNearBottom = this.isNearBottom();
     const row = document.createElement('div');
     row.className = 'la-message is-new is-current';
     row.innerHTML = `<span class="la-avatar">${ICON.bot}</span><div class="la-bubble">${html}${
       hint ? `<div class="lc-hint">${hint}</div>` : ''
     }</div>`;
     this.chatLogEl.appendChild(row);
-    this.scrollDown();
+    this.scrollDownIfPinned(wasNearBottom);
     // .is-new carries a `will-change` compositing hint (see style.css) so the arrival animation
     // doesn't force a repaint of .la-chat's large background artwork every frame — stripped once
     // the animation finishes so GPU layers don't pile up across a long conversation.
     row.addEventListener('animationend', () => row.classList.remove('is-new'), { once: true });
+    const bubble = row.querySelector<HTMLElement>('.la-bubble');
+    if (bubble) this.typeOutBubble(bubble, wasNearBottom);
+  }
+
+  /** Makes a bot bubble feel typed rather than dumped on screen instantly (2026-10-31 direct
+   * instruction: "it should feel like the bot is replying... thoda sa smooth banao... premium
+   * feel"). Only ever mutates existing TEXT NODES' own .data — the HTML structure (tags, the hint
+   * div, etc.) is rendered complete from the very first frame, so this can never corrupt markup the
+   * way an incremental innerHTML-rebuild approach could. Duration is capped regardless of message
+   * length ("typing speed should be thoda fast, the customer should not wait") — a one-line reply
+   * and a long paragraph both finish within the same short window, just at different per-character
+   * speeds. */
+  private typeOutBubble(bubble: HTMLElement, followScroll: boolean) {
+    const walker = document.createTreeWalker(bubble, NodeFilter.SHOW_TEXT);
+    const textNodes: Text[] = [];
+    let full = '';
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const t = node as Text;
+      textNodes.push(t);
+      full += t.data;
+    }
+    const totalChars = full.length;
+    if (totalChars === 0) return;
+    const originals = textNodes.map((t) => t.data);
+    textNodes.forEach((t) => (t.data = ''));
+
+    const maxDurationMs = 420;
+    const minPerCharMs = 9;
+    const totalDuration = Math.min(maxDurationMs, totalChars * minPerCharMs);
+    const start = performance.now();
+    const step = (now: number) => {
+      const elapsed = now - start;
+      const revealed = Math.min(totalChars, Math.round((elapsed / totalDuration) * totalChars));
+      let remaining = revealed;
+      for (const [i, node] of textNodes.entries()) {
+        const len = Math.min(remaining, originals[i].length);
+        if (node.data.length !== len) node.data = originals[i].slice(0, len);
+        remaining -= len;
+        if (remaining <= 0) break;
+      }
+      if (followScroll) this.scrollDown();
+      if (revealed < totalChars) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
   }
 
   private async appendLoadingThenBot(label: string, html: string, hint?: string | null) {
+    const wasNearBottom = this.isNearBottom();
     const row = document.createElement('div');
     row.className = 'la-message';
     row.innerHTML = `<span class="la-avatar">${ICON.bot}</span><div class="la-bubble lc-loading-row"><div class="lc-spinner"></div><span class="lc-loading-label"></span></div>`;
     row.querySelector<HTMLElement>('.lc-loading-label')!.textContent = label;
     this.chatLogEl.appendChild(row);
-    this.scrollDown();
+    this.scrollDownIfPinned(wasNearBottom);
     await sleep(900);
     row.remove();
     await this.appendBotBubble(html, hint);
@@ -698,7 +774,12 @@ export class ChatWidget {
     }
 
     this.renderComposer(resp);
-    this.scrollDown();
+    // Smart, not forced — the bot bubble just above (if any) already scrolled appropriately; this
+    // used to unconditionally re-force the bottom right after, undoing a deliberate scroll-up the
+    // moment the next composer rendered (2026-10-31 fix — part of "scroll up kabhi kabhi nahi
+    // horaha"). renderComposer only touches the separate composer region, not bodyEl's own
+    // scrollHeight, so checking isNearBottom() here still reflects the chat log correctly.
+    this.scrollDownIfPinned(this.isNearBottom());
 
     if (resp.input.type === 'none') {
       // Auto-continue past a step that has no user input (apiFetch/message) — see server
@@ -846,7 +927,7 @@ export class ChatWidget {
     for (const message of messages) {
       await this.appendBotBubble(message);
     }
-    this.scrollDown();
+    this.scrollDownIfPinned(this.isNearBottom());
     if (result === undefined || !this.resultCardShown) return;
     this.renderResultInto(result);
   }
@@ -871,9 +952,9 @@ export class ChatWidget {
 
     container.innerHTML = `
       <div class="lc-field-label" style="margin-top:14px">Want an RM to follow up directly?</div>
-      <div class="lc-choice-row">
-        <button class="lc-choice-btn" id="lc-pan-offer-yes">${this.panOfferNeedsMobile ? 'Yes, share details' : 'Yes, share PAN'}</button>
-        <button class="lc-choice-btn" id="lc-pan-offer-no">No thanks</button>
+      <div class="la-actions">
+        <button class="la-primary" id="lc-pan-offer-yes">${this.panOfferNeedsMobile ? 'Yes, share details' : 'Yes, share PAN'}</button>
+        <button class="la-secondary" id="lc-pan-offer-no">No thanks</button>
       </div>
     `;
     container.querySelector<HTMLButtonElement>('#lc-pan-offer-yes')!.onclick = () => this.showPanOfferInput();
@@ -1143,15 +1224,15 @@ export class ChatWidget {
   private renderStatusActions() {
     this.clearComposer();
     const wrap = document.createElement('div');
-    wrap.className = 'lc-choice-row lc-choice-column';
+    wrap.className = 'la-actions';
 
     const eligibilityBtn = document.createElement('button');
-    eligibilityBtn.className = 'lc-choice-btn';
+    eligibilityBtn.className = 'la-primary';
     eligibilityBtn.textContent = 'Check my eligibility';
     eligibilityBtn.onclick = () => void this.restartWithIntent(CHECK_ELIGIBILITY);
 
     const statusBtn = document.createElement('button');
-    statusBtn.className = 'lc-choice-btn';
+    statusBtn.className = 'la-secondary';
     statusBtn.textContent = 'Check status again';
     statusBtn.onclick = () => void this.restartWithIntent(CHECK_EXISTING_APPLICATION);
 
@@ -1181,7 +1262,14 @@ export class ChatWidget {
       if (gen !== this.requestGen) return;
       this.sessionToken = start.sessionToken;
       safeSetItem(STORAGE_KEY, start.sessionToken);
-      const answered = await this.api.send({ sessionToken: this.sessionToken, stepId: 'intent', value: intent });
+      // Was hardcoded to stepId: 'intent' (2026-10-31 fix) — correct today only because 'intent'
+      // happens to be the flow's first step, but a silent trap: if a brand-new blank session ever
+      // lands on anything else first, this would submit "Check my eligibility"/"Check an existing
+      // application" as the answer to the WRONG step, which is exactly the kind of mismatch that
+      // could make an eligibility click appear to land in the status flow (or vice versa) with no
+      // obvious cause. Using the step the server just actually told us we're on removes that risk
+      // entirely instead of relying on an assumption staying true forever.
+      const answered = await this.api.send({ sessionToken: this.sessionToken, stepId: start.stepId, value: intent });
       if (gen !== this.requestGen) return;
       await this.renderTurn(answered);
     } catch (err) {

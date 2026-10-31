@@ -8,7 +8,7 @@ import { mapSegmentToEmploymentType, LENDER_DISPLAY_NAME, personalLoanEligibilit
 import { personalLoanFinancerService, type PlFinancerLenderEntry, type PlLenderComparisonResult } from '../services/personalLoanFinancer.service';
 import { calcAge } from './homeLoan';
 import { pickRm } from './rm';
-import { leadService, type LeadSyncResult } from '../services/lead.service';
+import { ensureLeadOnce, type LeadSyncResult } from '../services/lead.service';
 import { maskPan } from '../lib/crypto';
 import { prisma } from '../lib/prisma';
 import { Prisma } from '@prisma/client';
@@ -339,8 +339,9 @@ export const personalLoanSteps: StepDefinition[] = [
     botMessage: () => null,
     input: () => ({ type: 'none' }),
     onAnswer: async (_parsed, ctx): Promise<{ plLeadResult: LeadSyncResult }> => {
-      const plLeadResult = await leadService.createLead({
+      const plLeadResult = await ensureLeadOnce({
         conversationId: ctx.conversationId,
+        rawPan: ctx.answers.pan as string,
         panMasked: maskPan(ctx.answers.pan as string),
         name: ctx.answers.name as string | undefined,
         mobileMasked: ctx.answers.mobile as string | undefined,
@@ -407,8 +408,9 @@ export const personalLoanSteps: StepDefinition[] = [
     botMessage: () => null,
     input: () => ({ type: 'none' }),
     onAnswer: async (_parsed, ctx): Promise<{ plLeadResult: LeadSyncResult }> => {
-      const plLeadResult = await leadService.createLead({
+      const plLeadResult = await ensureLeadOnce({
         conversationId: ctx.conversationId,
+        rawPan: ctx.answers.pan as string,
         panMasked: maskPan(ctx.answers.pan as string),
         name: ctx.answers.name as string | undefined,
         mobileMasked: ctx.answers.mobile as string | undefined,

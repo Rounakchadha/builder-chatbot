@@ -12,7 +12,7 @@ import { parseAmount } from '../lib/parseAmount';
 import { validateChoice } from '../lib/validateChoice';
 import { maskMobile, maskPan } from '../lib/crypto';
 import { leadCreatedMessage, pickRm } from './rm';
-import { leadService, type LeadSyncResult } from '../services/lead.service';
+import { ensureLeadOnce, type LeadSyncResult } from '../services/lead.service';
 
 /**
  * Loan Against Securities (shares / mutual funds) — branches off homeLoan.ts's 'product' step,
@@ -168,8 +168,9 @@ export const loanAgainstSharesSteps: StepDefinition[] = [
     botMessage: () => null,
     input: () => ({ type: 'none' }),
     onAnswer: async (_parsed, ctx): Promise<{ lasLeadResult: LeadSyncResult }> => {
-      const lasLeadResult = await leadService.createLead({
+      const lasLeadResult = await ensureLeadOnce({
         conversationId: ctx.conversationId,
+        rawPan: ctx.answers.pan as string,
         panMasked: maskPan(ctx.answers.pan as string),
         name: ctx.answers.name as string | undefined,
         mobileMasked: ctx.answers.mobile ? maskMobile(ctx.answers.mobile as string) : undefined,

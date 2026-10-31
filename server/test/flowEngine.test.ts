@@ -162,14 +162,15 @@ describe('home loan flow branching', () => {
     const commercialCtx = ctxWith({ dedupeFound: true, product: 'Loan against property', loanType: 'Property purchase', propertyGate: 'Yes', propertyType: 'Commercial' });
     const commercialStep = getStep(homeLoanFlow, 'collateralType');
     expect(commercialStep.input(commercialCtx)).toMatchObject({
-      options: ['Plot', 'Godown', 'Hotel', 'School/College', 'Resort', 'Restaurant', 'Nursing Home', 'Hospital', 'APMC', 'Shop', 'Banquet Hall'],
+      // 'Plot' moved to the end of each list (2026-10-31 direct instruction).
+      options: ['Godown', 'Hotel', 'School/College', 'Resort', 'Restaurant', 'Nursing Home', 'Hospital', 'APMC', 'Shop', 'Banquet Hall', 'Plot'],
     });
 
     const industrialCtx = ctxWith({ dedupeFound: true, product: 'Loan against property', loanType: 'Property purchase', propertyGate: 'Yes', propertyType: 'Industrial' });
-    expect(commercialStep.input(industrialCtx)).toMatchObject({ options: ['Plot', 'Godown', 'Factory', 'Warehouse'] });
+    expect(commercialStep.input(industrialCtx)).toMatchObject({ options: ['Godown', 'Factory', 'Warehouse', 'Plot'] });
 
     const residentialCtx = ctxWith({ dedupeFound: true, product: 'Loan against property', loanType: 'Property purchase', propertyGate: 'Yes', propertyType: 'Residential' });
-    expect(commercialStep.input(residentialCtx)).toMatchObject({ options: ['Plot', 'Apartment/Flat', 'Bunglow', 'Rowhouse'] });
+    expect(commercialStep.input(residentialCtx)).toMatchObject({ options: ['Apartment/Flat', 'Bunglow', 'Rowhouse', 'Plot'] });
   });
 
   it('never asks propertyType/occupancy when the property has not yet been identified', () => {

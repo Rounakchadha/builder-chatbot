@@ -76,16 +76,19 @@ export const LOAN_TYPES: Record<string, string[]> = {
 };
 
 export const PROPERTY_TYPES: Record<string, string[]> = {
-  'Home loan': ['Plot purchase', 'Row house', 'Bungalow', 'Apartment'],
+  // 'Plot purchase' moved to the end (2026-10-31 direct instruction) — it's the least common choice
+  // here, listing the more common ones first.
+  'Home loan': ['Row house', 'Bungalow', 'Apartment', 'Plot purchase'],
   'Loan against property': ['Residential', 'Commercial', 'Industrial'],
 };
 
 // LAP-only — the collateral options depend on which of the three PROPERTY_TYPES['Loan against
 // property'] values was picked. Not asked for Home loan at all.
 export const COLLATERAL_TYPES: Record<string, string[]> = {
-  Commercial: ['Plot', 'Godown', 'Hotel', 'School/College', 'Resort', 'Restaurant', 'Nursing Home', 'Hospital', 'APMC', 'Shop', 'Banquet Hall'],
-  Industrial: ['Plot', 'Godown', 'Factory', 'Warehouse'],
-  Residential: ['Plot', 'Apartment/Flat', 'Bunglow', 'Rowhouse'],
+  // 'Plot' moved to the end of each list (2026-10-31), same reasoning as PROPERTY_TYPES above.
+  Commercial: ['Godown', 'Hotel', 'School/College', 'Resort', 'Restaurant', 'Nursing Home', 'Hospital', 'APMC', 'Shop', 'Banquet Hall', 'Plot'],
+  Industrial: ['Godown', 'Factory', 'Warehouse', 'Plot'],
+  Residential: ['Apartment/Flat', 'Bunglow', 'Rowhouse', 'Plot'],
 };
 
 /** What the widget renders for the current step's input control. */

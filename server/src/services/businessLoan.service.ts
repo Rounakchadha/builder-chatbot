@@ -1,7 +1,7 @@
 import { env } from '../config/env';
 import { finfinityClient, FinfinityApiError } from './finfinityClient';
 import { generateLeadId, pickRm } from '../flows/rm';
-import { leadService } from './lead.service';
+import { ensureLeadOnce } from './lead.service';
 import { maskPan } from '../lib/crypto';
 import { logger } from '../lib/logger';
 
@@ -266,8 +266,9 @@ type PanToGstinResponse = Array<{
  */
 class RealBusinessLoanService implements BusinessLoanService {
   async createLead(input: BusinessLoanLeadInput): Promise<BusinessLoanLeadResult> {
-    const lead = await leadService.createLead({
+    const lead = await ensureLeadOnce({
       conversationId: input.conversationId,
+      rawPan: input.personalPan,
       panMasked: maskPan(input.personalPan),
       name: input.name,
       mobileMasked: input.mobile,
