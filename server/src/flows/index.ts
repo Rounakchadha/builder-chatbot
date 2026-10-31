@@ -3,6 +3,7 @@ import { homeLoanFlow } from './homeLoan';
 import { personalLoanSteps } from './personalLoan';
 import { goldLoanSteps } from './goldLoan';
 import { businessLoanSteps } from './businessLoan';
+import { loanAgainstSharesSteps } from './loanAgainstShares';
 
 /**
  * Composes the single ordered step array the engine walks (see flow-engine/engine.ts's forward-walk
@@ -35,6 +36,7 @@ export const mainFlow: FlowDefinition = {
     ...personalLoanSteps,
     ...goldLoanSteps,
     ...businessLoanSteps,
+    ...loanAgainstSharesSteps,
     ...homeLoanFlow.steps.slice(productIndex + 1),
   ],
 };

@@ -1,4 +1,4 @@
-import type { InputSpec, StepType } from '@loan-chatbot/shared';
+import type { InputSpec, StepType } from '@builder-chatbot/shared';
 
 export type Answers = Record<string, unknown>;
 

@@ -1,12 +1,21 @@
 import type { FastifyInstance } from 'fastify';
-import { ChatMessageRequest, CHECK_ELIGIBILITY, CHECK_EXISTING_APPLICATION, type ChatTurnResponse } from '@loan-chatbot/shared';
+import { ChatMessageRequest, CHECK_ELIGIBILITY, CHECK_EXISTING_APPLICATION, type ChatTurnResponse, type EligibilityResultPayload } from '@builder-chatbot/shared';
 import { applicablePath, getStep, nextStepId, renderStep } from '../flow-engine/engine';
 import type { StepContext } from '../flow-engine/types';
 import { mainFlow } from '../flows';
 import { recomputeEligibility, createLeadFromResult } from '../flows/homeLoan';
+import { buildGoldLoanRmDetails } from '../flows/goldLoan';
+import { buildLasRmDetails } from '../flows/loanAgainstShares';
+import { buildBusinessLoanRmDetails } from '../flows/businessLoan';
 import { EDITABLE_FIELDS, isEditableField, isFieldEditableNow, PROFILE_FIELDS } from '../flows/editableFields';
 import { createSession, loadSession, persistAnswer, advanceCurrentStep, saveSession, logMessage, type SessionState } from '../services/session.service';
 import { smsService } from '../services/sms.service';
+import { FinfinityApiError } from '../services/finfinityClient';
+import { goldLeadService } from '../services/goldLoan.service';
+import { leadService } from '../services/lead.service';
+import { personalLoanFinancerService, type PlFinancerLenderEntry } from '../services/personalLoanFinancer.service';
+import { env } from '../config/env';
+import { emailService } from '../services/email.service';
 import { recallIdentity } from '../services/identity.service';
 import { searchEmployers } from '../services/employer.service';
 import { hmacLookup, maskMobile, maskPan } from '../lib/crypto';
@@ -54,8 +63,10 @@ async function beginNewSession(ip: string, userAgent: string | undefined, identi
   const state = await createSession(FLOW.id, firstId, { answers: ctxAnswers, mobileHash, mobileMasked, panConsent: mobileHash ? true : undefined });
   if (mobileHash) {
     // Same compliance trail the 'mobile' step's own onAnswer would have written — skipped here
-    // since that step itself never runs for a resumed identity.
-    await prisma.consentAudit.create({ data: { conversationId: state.conversationId, decision: true, ipAddress: ip, userAgent } });
+    // since that step itself never runs for a resumed identity. Marked source: 'identity_resume'
+    // (not the default 'mobile_step') since this isn't a fresh consent decision — see ConsentAudit's
+    // own doc comment in schema.prisma.
+    await prisma.consentAudit.create({ data: { conversationId: state.conversationId, decision: true, source: 'identity_resume', ipAddress: ip, userAgent } });
   }
   const ctx = toCtx(state, ip, userAgent);
 
@@ -81,7 +92,7 @@ async function beginNewSession(ip: string, userAgent: string | undefined, identi
     }
   }
 
-  const response = render(state.currentStepId, state.sessionToken, ctx, errorText);
+  const response = await render(state.currentStepId, state.sessionToken, ctx, errorText);
   if (response.botMessage) await logMessage(state.conversationId, 'bot', response.botMessage, state.currentStepId);
   return response;
 }
@@ -97,14 +108,6 @@ function redactForTranscript(stepType: string, value: string): string {
   return value;
 }
 
-/** Keys that must never reach the permanent FlowAnswer table (Postgres) — kept only in the live,
- * TTL'd Redis session state, for the rest of THIS conversation. `duplicateMatch` in particular can
- * carry a completely DIFFERENT customer's real name/DOB/email/mobile/credit score (see
- * dedupe.service.ts's DuplicateMatch) — every other place in this codebase encrypts or masks PAN/
- * mobile before it's ever written to a durable table; this is the one path that would otherwise
- * write a third party's PII in plaintext into someone else's permanent conversation record. */
-const TRANSIENT_ANSWER_KEYS = new Set(['duplicateMatch']);
-
 /** Runs a step's onAnswer (if any), merging any extra keys it returns into the session's answers. */
 async function runOnAnswer(stepId: string, parsed: unknown, ctx: StepContext): Promise<void> {
   const step = getStep(FLOW, stepId);
@@ -114,8 +117,11 @@ async function runOnAnswer(stepId: string, parsed: unknown, ctx: StepContext): P
     Object.assign(ctx.answers, extras);
     // Persisted under the flat key itself (not namespaced) so a Postgres rehydration after a
     // Redis TTL expiry reconstructs the exact same ctx.answers shape as the live hot state.
+    // persistAnswer itself now decides what actually gets written vs. skipped/encrypted (see
+    // session.service.ts's NEVER_PERSIST_KEYS/ENCRYPT_KEYS) — centralized there so every call site
+    // (this one, the raw current-step answer below, and createSession's own seeding) gets the same
+    // protection automatically instead of each needing its own copy of this check.
     for (const [k, v] of Object.entries(extras)) {
-      if (TRANSIENT_ANSWER_KEYS.has(k)) continue;
       await persistAnswer(ctx.conversationId, k, v);
     }
   }
@@ -123,7 +129,7 @@ async function runOnAnswer(stepId: string, parsed: unknown, ctx: StepContext): P
 
 /** renderStep + the one bit of extra state (the computed result payload) it doesn't know about — every
  * call site that might render the 'result' step goes through this so the payload is never forgotten. */
-function render(stepId: string, sessionToken: string, ctx: StepContext, errorText?: string): ChatTurnResponse {
+async function render(stepId: string, sessionToken: string, ctx: StepContext, errorText?: string): Promise<ChatTurnResponse> {
   const response = renderStep(FLOW, stepId, sessionToken, ctx, errorText);
   // Checked by step TYPE (not the literal id "result") so every product's own terminal step — each
   // has its own unique id, e.g. 'plResult'/'glResult'/'blResult' (see flows/personalLoan.ts etc.) —
@@ -132,16 +138,57 @@ function render(stepId: string, sessionToken: string, ctx: StepContext, errorTex
   const isResultType = getStep(FLOW, stepId).type === 'result';
   if (isResultType && ctx.answers.intent === CHECK_ELIGIBILITY) {
     response.result = ctx.answers.resultPayload;
-    // Offer to share PAN for a lead/RM follow-up only when no lead exists yet — computeResultPayload
-    // only auto-creates a home-loan lead when a PAN was already known, so this is the one path back
-    // to a lead for everyone else. Personal/Gold/Business loan always set leadCreated: true (their
-    // lead/offers are mocked, but always "created") by the time their own result step renders, so
-    // this naturally stays false for them — no PAN-share prompt after an already-"created" lead.
-    const payload = ctx.answers.resultPayload as { leadCreated?: boolean } | undefined;
-    response.panOffer = !payload?.leadCreated;
+    // Offer to share PAN for a lead/RM follow-up only when PAN is genuinely still unknown — the
+    // Home Loan "declined PAN upfront" path is the only real case for this. Personal/Gold/Business
+    // loan always already have a real PAN by their own result step (they branch off AFTER the full
+    // identity chain — see personalLoan.ts's doc comment), so this naturally stays false for them
+    // even when leadCreated is false for an unrelated reason — e.g. Gold Loan's real
+    // "customer already has an active Muthoot lead" case (see goldLoan.service.ts) — where offering
+    // to "share PAN" would be nonsensical since it's already fully known.
+    const payload = ctx.answers.resultPayload as { leadCreated?: boolean; rm?: { name: string; phone: string; email: string }; product?: string; loanType?: string; leadId?: string } | undefined;
+    response.panOffer = !payload?.leadCreated && !ctx.answers.pan;
     // The no-contact-consent branch never asked for a mobile number either — the offer needs to
     // collect one too before a lead/RM follow-up is even possible.
     response.panOfferNeedsMobile = !ctx.answers.mobile;
+
+    // RM summary email — fired exactly once per conversation, the first time a lead (real or
+    // dummy) actually exists, regardless of product. `rmSummaryEmailSent` guards against sending
+    // again on every re-render of the same result step (widget polling, page refresh, etc.).
+    if (payload?.leadCreated && payload.rm && !ctx.answers.rmSummaryEmailSent) {
+      const product = payload.product ?? (ctx.answers.product as string | undefined) ?? 'Unknown';
+      // Gold Loan/LAS send everything the customer answered; Business Loan sends everything except
+      // PAN and CIBIL score (2026-10-21 instruction) — every other product still only gets the
+      // generic rows above, unchanged.
+      const productDetails =
+        product === 'Gold Loan'
+          ? buildGoldLoanRmDetails(ctx)
+          : product === 'Loan Against Securities'
+            ? buildLasRmDetails(ctx)
+            : product === 'Business Loan'
+              ? buildBusinessLoanRmDetails(ctx)
+              : undefined;
+      // Security-review finding, 2026-10-23: the "sent" flag used to be set BEFORE this call, so a
+      // real SMTP failure (sendRmSummary logs and swallows its own error, see email.service.ts) was
+      // marked permanently "done" anyway — the RM silently never heard about the lead with nothing
+      // to retry it. Now only persisted once the send actually reports success.
+      const sent = await emailService.sendRmSummary({
+        // TEMPORARY (2026-10-21 instruction) — every send goes to RM_EMAIL_OVERRIDE_TO instead of
+        // the real/fallback RM's own email, for test visibility. RM name/phone shown in the email
+        // body are still the real assigned RM's — only the actual delivery address is overridden.
+        rm: env.RM_EMAIL_OVERRIDE_TO ? { ...payload.rm, email: env.RM_EMAIL_OVERRIDE_TO } : payload.rm,
+        customerName: ctx.answers.name as string | undefined,
+        mobile: ctx.answers.mobile as string | undefined,
+        customerEmail: ctx.answers.email as string | undefined,
+        product,
+        loanType: payload.loanType,
+        leadId: payload.leadId,
+        productDetails,
+      });
+      if (sent) {
+        ctx.answers.rmSummaryEmailSent = true;
+        await persistAnswer(ctx.conversationId, 'rmSummaryEmailSent', true);
+      }
+    }
   }
   if (isResultType && ctx.answers.intent === CHECK_EXISTING_APPLICATION) {
     // The status branch otherwise dead-ends here — offer a way back into either flow instead of
@@ -165,7 +212,7 @@ async function advanceAndRender(state: SessionState, fromStepId: string, ctx: St
   const nextId = nextStepId(FLOW, fromStepId, ctx);
   if (!nextId) {
     // Shouldn't happen — 'result' is always the last applicable step — but fail safe by re-rendering current.
-    return render(fromStepId, state.sessionToken, ctx);
+    return await render(fromStepId, state.sessionToken, ctx);
   }
   // Only auto-executing steps (input type "none" — apiFetch/message/result) run their onAnswer
   // immediately on arrival, since there's no user input to wait for. Interactive steps (mobile,
@@ -181,7 +228,7 @@ async function advanceAndRender(state: SessionState, fromStepId: string, ctx: St
       // already sitting on, with a friendly error — same as an interactive step's onAnswer failing.
       logger.error({ err, stepId: nextId, conversationId: ctx.conversationId }, 'auto-step onAnswer failed');
       const errorText = err instanceof UserFacingError ? err.message : EXTERNAL_SERVICE_ERROR_TEXT;
-      const response = render(fromStepId, state.sessionToken, ctx, errorText);
+      const response = await render(fromStepId, state.sessionToken, ctx, errorText);
       if (err instanceof UserFacingError && err.action) response.errorAction = err.action;
       return response;
     }
@@ -191,7 +238,7 @@ async function advanceAndRender(state: SessionState, fromStepId: string, ctx: St
   await advanceCurrentStep(ctx.conversationId, nextId);
   await saveSession(state);
 
-  const response = render(nextId, state.sessionToken, ctx);
+  const response = await render(nextId, state.sessionToken, ctx);
   if (response.botMessage) await logMessage(ctx.conversationId, 'bot', response.botMessage, nextId);
   return response;
 }
@@ -210,9 +257,11 @@ interface EditOutcome {
   eligibilityMessage?: string;
 }
 
-/** Shared by the profile-panel edit endpoint and chat-based "change my income to 90000" edits —
- * revalidates through the field's own step definition (so an edit can never bypass the rules a
- * fresh answer would have to pass), then re-runs eligibility math if a result already exists. */
+/** Called by the profile-panel edit endpoint (/api/chat/edit) — the only real way a customer
+ * revises an answer after the fact; there's no free-text "change my income to 90000" chat parser
+ * anywhere (confirmed 2026-10-17 — an earlier comment here implied one existed). Revalidates
+ * through the field's own step definition (so an edit can never bypass the rules a fresh answer
+ * would have to pass), then re-runs eligibility math if a result already exists. */
 async function applyFieldEdit(state: SessionState, ctx: StepContext, field: string, rawValue: string): Promise<EditOutcome> {
   if (!isEditableField(field)) return { ok: false, error: 'That detail can\'t be edited directly — start a new check if it needs to change.' };
   // An existing (dedupe-found) customer's segment/pincode/email came from Finfinity's own
@@ -224,6 +273,14 @@ async function applyFieldEdit(state: SessionState, ctx: StepContext, field: stri
   const step = getStep(FLOW, field);
   const validation = step.validate?.(rawValue, ctx) ?? { ok: true, parsed: rawValue };
   if (!validation.ok) return { ok: false, error: validation.error };
+  // Known gap, not fixed here (security-review finding, 2026-10-23): this only re-validates an
+  // edited email's FORMAT, not whether it belongs to a different existing customer — the real
+  // duplicate-email check only runs during initial signup (emailDuplicateCheck in homeLoan.ts),
+  // which is a multi-step OTP-gated flow (check -> choice -> verify), not a single validator
+  // function this edit path could just call inline. Wiring a profile-panel edit into that same
+  // multi-step flow would need real restructuring (the edit endpoint would have to hand control
+  // back to the conversation's step machine mid-edit) — left alone rather than attempting that
+  // under this batch of fixes; flag for a follow-up if email-duplicate-on-edit matters in practice.
 
   ctx.answers[field] = validation.parsed;
   await persistAnswer(ctx.conversationId, field, validation.parsed);
@@ -233,7 +290,21 @@ async function applyFieldEdit(state: SessionState, ctx: StepContext, field: stri
   outcome.summaryMessage = `Got it — ${fieldDef.label} updated to ${outcome.display}.`;
   await logMessage(ctx.conversationId, 'bot', outcome.summaryMessage);
 
-  if (ctx.answers.resultPayload) {
+  // Security-review finding, 2026-10-23: this used to call Home Loan's own recomputeEligibility
+  // unconditionally for ANY product's edit — editing a Business Loan address, or income/pincode/
+  // email on a Personal or Gold Loan result, ran Home Loan's eligibility math against data it was
+  // never designed to read, which usually came back "no eligibility" and silently replaced a real
+  // result with a wrong one. Home Loan/LAP (the product recomputeEligibility actually exists for)
+  // keeps the real recompute; every other product's editable fields (segment/income/emi/pincode/
+  // email, and Business Loan's address) don't feed into that product's own eligibility math anyway
+  // (Personal Loan's offers come from a real, non-idempotent BRE call chain that isn't safe to
+  // re-fire on every edit; Gold Loan's cap comes from gold weight/purity, neither of which is
+  // editable here; Business Loan/LAS have no eligibility math at all, just a lead) — so for those,
+  // the answer is saved and the existing result is left exactly as it was instead of being
+  // reached into with the wrong product's formula.
+  const product = ctx.answers.product as string | undefined;
+  const isHomeLoanOrLap = !product || product === 'Home loan' || product === 'Loan against property';
+  if (ctx.answers.resultPayload && isHomeLoanOrLap) {
     const updated = await recomputeEligibility(ctx, ctx.answers.resultPayload as any);
     ctx.answers.resultPayload = updated;
     await persistAnswer(ctx.conversationId, 'resultPayload', updated);
@@ -273,7 +344,7 @@ export async function chatRoutes(app: FastifyInstance) {
     // step's validate() would otherwise see an empty value and show a spurious error).
     // A stale/replayed stepId that doesn't match is handled the same way: just re-sync the client.
     if (!body.stepId || body.stepId !== state.currentStepId) {
-      return reply.send(render(state.currentStepId, state.sessionToken, ctx));
+      return reply.send(await render(state.currentStepId, state.sessionToken, ctx));
     }
 
     // A customer typing "start over"/"restart"/etc. as their answer to whatever question is on
@@ -293,7 +364,7 @@ export async function chatRoutes(app: FastifyInstance) {
     if (currentStep.type === 'result') {
       // Terminal step — nothing more to validate, just re-serve the current result (e.g. a
       // page-reload resync, or the idempotent "continue" the widget sends after rendering it).
-      return reply.send(render(state.currentStepId, state.sessionToken, ctx));
+      return reply.send(await render(state.currentStepId, state.sessionToken, ctx));
     }
 
     // --- Interactive step: validate the user's answer ---
@@ -306,7 +377,7 @@ export async function chatRoutes(app: FastifyInstance) {
       // Persist ctx.answers even on a failed validation — validateChoice() may have stashed a
       // "did you mean X?" suggestion on it, which needs to survive until the next message.
       await saveSession(state);
-      const response = render(state.currentStepId, state.sessionToken, ctx, validation.error);
+      const response = await render(state.currentStepId, state.sessionToken, ctx, validation.error);
       return reply.send(response);
     }
 
@@ -321,7 +392,7 @@ export async function chatRoutes(app: FastifyInstance) {
       const knownSafeMessages = ['Incorrect OTP. Please try again.', 'Too many incorrect attempts. Please request a new OTP.'];
       const message = err instanceof UserFacingError || (err instanceof Error && knownSafeMessages.includes(err.message)) ? (err as Error).message : EXTERNAL_SERVICE_ERROR_TEXT;
       if (message === EXTERNAL_SERVICE_ERROR_TEXT) logger.error({ err, stepId: state.currentStepId, conversationId: ctx.conversationId }, 'interactive-step onAnswer failed');
-      const response = render(state.currentStepId, state.sessionToken, ctx, message);
+      const response = await render(state.currentStepId, state.sessionToken, ctx, message);
       return reply.send(response);
     }
 
@@ -344,15 +415,36 @@ export async function chatRoutes(app: FastifyInstance) {
     }
 
     const cooldownKey = `otp:resend-cooldown:${state.conversationId}`;
-    const onCooldown = await redis.get(cooldownKey);
-    if (onCooldown) return reply.code(429).send({ error: 'resend_too_soon', message: 'Please wait a bit before requesting another OTP.' });
+    // Security-review finding, 2026-10-23: this used to read the cooldown key, then only set it
+    // later after a successful send — two resend clicks arriving close enough together could both
+    // read "no cooldown" before either one set it, letting both through as real sends. SET ... NX
+    // claims the cooldown atomically in the same call that checks it, so only one concurrent request
+    // can ever win. If the send itself then fails for a reason OTHER than the real backend's own
+    // cooldown, the claim is released below so the customer isn't stuck waiting on a resend that
+    // never actually went out.
+    const claimed = await redis.set(cooldownKey, '1', 'EX', 30, 'NX');
+    if (!claimed) return reply.code(429).send({ error: 'resend_too_soon', message: 'Please wait a bit before requesting another OTP.' });
 
-    await smsService.sendOtp(state.conversationId, state.answers.mobile as string);
-    await redis.set(cooldownKey, '1', 'EX', 30);
+    try {
+      await smsService.sendOtp(state.conversationId, state.answers.mobile as string);
+    } catch (err) {
+      // The real Finfinity backend has its OWN resend cooldown (OTPWAIT, commonly ~60s — longer
+      // than our own 30s Redis cooldown above), so this can legitimately fire even once our own
+      // cooldown has expired. Previously unhandled here — any error, including this expected one,
+      // crashed to a generic 500. Surface it the same safe way as the cooldown check above instead.
+      if (err instanceof FinfinityApiError && err.code === 'OTPWAIT') {
+        return reply.code(429).send({ error: 'resend_too_soon', message: 'Please wait a bit before requesting another OTP.' });
+      }
+      await redis.del(cooldownKey);
+      logger.error({ err, event: 'resend_otp_failed' }, 'resend-otp failed');
+      return reply.code(502).send({ error: 'resend_failed', message: "Couldn't resend the OTP right now — please try again shortly." });
+    }
     return reply.send({ ok: true });
   });
 
-  const EditRequest = z.object({ sessionToken: z.string(), field: z.string(), value: z.string() });
+  // Security-review finding, 2026-10-23: see ChatMessageRequest's own comment in shared/src/index.ts
+  // — same reasoning, applied to this route's own request schemas.
+  const EditRequest = z.object({ sessionToken: z.string().max(128), field: z.string().max(100), value: z.string().max(1000) });
 
   app.post('/api/chat/edit', async (req, reply) => {
     const body = EditRequest.parse(req.body ?? {});
@@ -364,11 +456,117 @@ export async function chatRoutes(app: FastifyInstance) {
     return reply.send(outcome);
   });
 
+  /** Fired when the customer taps the Gold Loan submit card — the ENTIRE real submission to
+   * Finfinity/Muthoot happens here now (create_anacity_lead + setmuthootlenderoffer +
+   * muthootleadgeneration, see services/goldLoan.service.ts's submitApplication), not before.
+   * Redesigned 2026-10-15: previously lead creation + lender attach happened silently as soon as
+   * glResult was reached, before any customer action — meaning a customer who never clicked submit
+   * still had a real lead permanently blocking any future real attempt (Finfinity allows only one
+   * Muthoot lead per customer). Nothing real touches Finfinity until this one explicit click now. */
+  app.post('/api/chat/gold-submit', async (req, reply) => {
+    const body = ChatMessageRequest.pick({ sessionToken: true }).parse(req.body ?? {});
+    if (!body.sessionToken) return reply.code(400).send({ ok: false, error: 'missing_session_token' });
+
+    const state = await loadSession(body.sessionToken);
+    if (!state) return reply.code(404).send({ ok: false, error: 'This session has expired. Please start again.' });
+    const resultPayload = state.answers.resultPayload as { eligible?: boolean; leadId?: string; rm?: { name: string; phone: string; email: string } } | undefined;
+    if (state.currentStepId !== 'glResult' || !resultPayload?.eligible) {
+      return reply.code(409).send({ ok: false, error: 'not_awaiting_gold_submit' });
+    }
+    // The real lead (and real RM) were already created the moment this branch was entered
+    // (glCreateLead, see flows/goldLoan.ts) — this endpoint only attaches Muthoot and submits,
+    // the two calls that actually consume Finfinity's "one Muthoot lead per customer" slot. The RM
+    // summary email already fired back when glResult first rendered (same generic path every other
+    // product uses, right above in this file) — nothing to send again here.
+    if (!resultPayload.leadId || !resultPayload.rm) {
+      return reply.code(409).send({ ok: false, error: 'no_lead_for_gold_submit' });
+    }
+
+    const result = await goldLeadService.submitApplication({
+      leadId: resultPayload.leadId,
+      rm: resultPayload.rm,
+      token: state.answers.finfinityAccessToken as string | undefined,
+    });
+
+    return reply.send(result);
+  });
+
+  const SelectOfferRequest = z.object({ sessionToken: z.string().max(128), lenderName: z.string().max(100) });
+
+  /** Fired when the customer picks a specific lender's offer on a result screen — POST
+   * /leadflow/setbrefinanceroffertenure, confirmed live (2026-10-15) to work identically for Home
+   * Loan, LAP, and Personal Loan (see lead.service.ts's setOfferTenure doc comment). Home Loan/LAP
+   * already have a real lead by this point (created earlier in their own flow); Personal Loan does
+   * not yet — its real lead is created HERE, lazily, via create_anacity_lead (2026-10-16 — switched
+   * from createcorplead, which never returned an RM), only because the customer explicitly picked
+   * an offer, same "nothing real until explicit action" principle as Gold Loan's submit click. */
+  app.post('/api/chat/select-offer', async (req, reply) => {
+    const body = SelectOfferRequest.parse(req.body ?? {});
+    const state = await loadSession(body.sessionToken);
+    if (!state) return reply.code(404).send({ ok: false, error: 'This session has expired. Please start again.' });
+
+    const isResultStep = getStep(FLOW, state.currentStepId)?.type === 'result';
+    const payload = state.answers.resultPayload as EligibilityResultPayload | undefined;
+    if (!isResultStep || !payload?.offers?.length) {
+      return reply.code(409).send({ ok: false, error: 'not_awaiting_offer_select' });
+    }
+
+    const offer = payload.offers.find((o) => o.name === body.lenderName);
+    if (!offer) return reply.code(400).send({ ok: false, error: 'unknown_lender' });
+
+    const ctx = toCtx(state, req.ip, req.headers['user-agent']);
+    const token = ctx.answers.finfinityAccessToken as string | undefined;
+    let leadId = payload.leadId;
+    let rm: { name: string; phone: string; email: string } | undefined;
+    if (!leadId) {
+      const lead = await leadService.createLead({
+        conversationId: ctx.conversationId,
+        panMasked: maskPan(ctx.answers.pan as string),
+        name: ctx.answers.name as string | undefined,
+        mobileMasked: ctx.answers.mobile ? maskMobile(ctx.answers.mobile as string) : undefined,
+        creditScore: ctx.answers.creditScore as number | undefined,
+        product: payload.product,
+        loanType: payload.loanType,
+        remoteCustomerId: ctx.answers.remoteCustomerId as number | undefined,
+        token,
+      });
+      if (!lead.builderLeadId) return reply.code(502).send({ ok: false, error: 'lead_creation_failed' });
+      leadId = lead.builderLeadId;
+      rm = lead.rm;
+      payload.leadId = leadId;
+      payload.leadCreated = true;
+      if (rm) payload.rm = rm;
+      ctx.answers.resultPayload = payload;
+      await persistAnswer(ctx.conversationId, 'resultPayload', payload);
+    }
+
+    // Personal Loan's real financer chain (off by default — see personalLoanFinancer.service.ts)
+    // needs two extra calls (setcorpamtten + pl_financer_offer) before the tenure can be confirmed
+    // — writes the customer's chosen lender/amount/tenure onto the lead, then recomputes the final
+    // numbers for exactly that selection. Every other product skips straight to setOfferTenure, same
+    // as before this chain existed.
+    if (payload.product === 'Personal Loan' && env.PL_REAL_FINANCER_CHAIN_ENABLED) {
+      const rawByLender = ctx.answers.plFinancerRawByLender as Record<string, PlFinancerLenderEntry> | undefined;
+      const lender = rawByLender?.[body.lenderName];
+      if (!lender) return reply.code(500).send({ ok: false, error: 'missing_financer_lender_data' });
+      await personalLoanFinancerService.confirmOffer({
+        leadId,
+        lender,
+        requestedLoanAmount: Number(ctx.answers.plLoanAmount),
+        requestedTenureMonths: offer.tenureYears * 12,
+        token,
+      });
+    }
+
+    await leadService.setOfferTenure(leadId, offer.tenureYears * 12, token);
+    return reply.send({ ok: true, leadId, rm });
+  });
+
   const PanOfferRequest = z.object({
-    sessionToken: z.string(),
+    sessionToken: z.string().max(128),
     decision: z.enum(['decline']).optional(),
-    pan: z.string().optional(),
-    mobile: z.string().optional(),
+    pan: z.string().max(20).optional(),
+    mobile: z.string().max(20).optional(),
   });
 
   /** Post-eligibility offer for anyone who declined PAN up front (and, for the no-contact-consent
@@ -387,6 +585,18 @@ export async function chatRoutes(app: FastifyInstance) {
 
     if (body.decision === 'decline') {
       return reply.send({ ok: true });
+    }
+
+    // Security-review finding, 2026-10-23: this used to let a second /pan-offer call through
+    // unconditionally — ensureLead (called below via createLeadFromResult) already stops a SECOND
+    // real lead from being created, but it also means a PAN submitted here after one was already on
+    // file just got silently swapped into ctx.answers.pan/resultPayload while the real lead (and its
+    // Lead row) stayed registered under the FIRST PAN — the customer-facing state and the actual
+    // Finfinity lead would then disagree about whose PAN this application is under. A PAN is already
+    // on file either from the normal consent flow or from an earlier pan-offer call, so there's
+    // nothing left for this endpoint to do.
+    if (ctx.answers.pan) {
+      return reply.code(409).send({ ok: false, error: 'A PAN is already on file for this application.' });
     }
 
     if (!ctx.answers.mobile) {
@@ -437,7 +647,7 @@ export async function chatRoutes(app: FastifyInstance) {
   // Backs every 'typeahead'-type step's input (see InputSpec in shared) — `searchKey` picks which
   // server-side list to search; add a new entry here when a second typeahead-backed field shows up.
   const TYPEAHEAD_SEARCHERS: Record<string, (query: string) => string[]> = { employer: searchEmployers };
-  const TypeaheadSearchRequest = z.object({ searchKey: z.string(), query: z.string() });
+  const TypeaheadSearchRequest = z.object({ searchKey: z.string().max(50), query: z.string().max(100) });
   app.post('/api/chat/typeahead-search', async (req, reply) => {
     const body = TypeaheadSearchRequest.parse(req.body ?? {});
     const search = TYPEAHEAD_SEARCHERS[body.searchKey];

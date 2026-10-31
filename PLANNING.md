@@ -1,6 +1,6 @@
 # Planning
 
-Running notes and decisions for the home loan chatbot. Add to this as things come up.
+Running notes and decisions for the builder chatbot. Add to this as things come up.
 
 ## Tech stack decisions
 

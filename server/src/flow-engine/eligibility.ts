@@ -1,4 +1,4 @@
-import type { LenderOffer, Segment } from '@loan-chatbot/shared';
+import type { LenderOffer, Segment } from '@builder-chatbot/shared';
 
 /**
  * Ported verbatim (formula-for-formula) from the prototype's

@@ -1,21 +1,27 @@
-import type { LenderOffer } from '@loan-chatbot/shared';
-import { hashCode } from '../flow-engine/eligibility';
+import type { LenderOffer } from '@builder-chatbot/shared';
 
 /**
- * Placeholder lender-offer math for Personal/Gold/Business loan — mirrors the style of
- * flow-engine/eligibility.ts's home-loan mock (deterministic per seedKey, varied per lender) but
- * keyed off a requested amount rather than an income/FOIR formula, since that's what these three
- * products ask for directly. There's no real BRE integration for these products yet (see
- * lead.service.ts/eligibility.service.ts, which only know Home loan/LAP) — every number here is a
- * stand-in until Finfinity confirms real product codes/endpoints for Personal/Gold/Business loan.
+ * Gold Loan's offer math (the only product still calling this — see flows/goldLoan.ts). The caller
+ * already computes `requestedLakh` from a real formula (gold weight x purity rate x LTV cap), so
+ * this just turns that capped amount into an EMI at a fixed rate.
+ *
+ * Used to also randomize the shown amount/rate per lender via a hash of (lender name + seedKey)
+ * (security-review finding, 2026-10-23: "we have a real formula, why randomize the number on top of
+ * it?") — removed, since two customers with the identical gold weight/purity have no reason to see
+ * different amounts or rates. The result is still a placeholder (the per-gram rate isn't today's
+ * live gold rate, and the interest rate is a fixed stand-in, not Muthoot's real pricing), so the
+ * caller marks it `isEstimate` for the widget rather than presenting it as a locked offer.
  */
 export function mockOffersForAmount(requestedLakh: number, lenders: string[], seedKey: string, baseRatePct: number, tenureYears: number): LenderOffer[] {
+  void seedKey;
   return lenders
     .map((name) => {
-      const seed = Math.abs(hashCode(name + seedKey));
-      const factor = 0.7 + ((seed % 31) / 100); // 0.70x - 1.00x of what was requested
-      const amountLakh = Number((requestedLakh * factor).toFixed(1));
-      const rate = baseRatePct + (((seed >> 3) % 9) - 4) / 10; // +/- 0.4 percentage points
+      // 2 decimals (₹1,000 resolution), not 1 (₹10,000) — Gold loan amounts can legitimately be
+      // small (a few grams of gold), and rounding to the coarser resolution was flooring genuine,
+      // non-zero amounts down to exactly 0, which then read as "not eligible" even though a real
+      // (if tiny) loan amount existed.
+      const amountLakh = Number(requestedLakh.toFixed(2));
+      const rate = baseRatePct;
       const n = tenureYears * 12;
       const r = rate / 100 / 12;
       const principal = amountLakh * 100_000;

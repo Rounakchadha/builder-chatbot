@@ -1,5 +1,5 @@
 {
-  "name": "@loan-chatbot/widget",
+  "name": "@builder-chatbot/widget",
   "version": "0.1.0",
   "private": true,
   "scripts": {
@@ -7,7 +7,7 @@
     "build": "tsc -p tsconfig.json && vite build"
   },
   "dependencies": {
-    "@loan-chatbot/shared": "*"
+    "@builder-chatbot/shared": "*"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",

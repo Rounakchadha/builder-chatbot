@@ -1,0 +1,12 @@
+node_modules
+dist
+.git
+.env
+*.env
+*.log
+*.rdb
+dump.rdb
+*.xlsx
+cibil_profile.txt
+.claude
+.DS_Store

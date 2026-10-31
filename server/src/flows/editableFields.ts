@@ -2,15 +2,18 @@ import type { StepContext } from '../flow-engine/types';
 import { maskMobile, maskPan } from '../lib/crypto';
 
 /**
- * Fields the customer can revise after the fact — from the profile panel, or by saying "change my
- * income to 90000" in chat. Deliberately limited to "leaf" fields with no downstream dependents:
- * editing income/EMI/segment/pincode/score only ever changes numbers, never which questions were
- * asked. product/loanType/propertyType/occupancy are excluded because changing them could
- * invalidate answers already given for later, dependent questions — safer to have the customer
- * restart in that case than to silently leave the flow in an inconsistent state.
+ * Fields the customer can revise after the fact — via the profile panel's edit pencil only (the
+ * one and only real mechanism; POST /api/chat/edit is the sole caller of applyFieldEdit — there is
+ * no free-text "change my income to 90000" chat parser anywhere in this codebase, despite an
+ * earlier version of this comment implying one existed — confirmed and corrected 2026-10-17).
+ * Deliberately limited to "leaf" fields with no downstream dependents: editing income/EMI/segment/
+ * pincode/score only ever changes numbers, never which questions were asked. product/loanType/
+ * propertyType/occupancy are excluded because changing them could invalidate answers already given
+ * for later, dependent questions — safer to have the customer restart in that case than to
+ * silently leave the flow in an inconsistent state.
  */
 export interface EditableField {
-  key: 'segment' | 'income' | 'emi' | 'pincode' | 'email';
+  key: 'segment' | 'income' | 'emi' | 'pincode' | 'email' | 'blBusinessAddress';
   label: string;
   format: (ctx: StepContext) => string;
   /** An existing (dedupe-found) customer's segment/pincode/email came from Finfinity's own
@@ -47,6 +50,15 @@ export const EDITABLE_FIELDS: EditableField[] = [
     editableFor: editableForFoundOrNot('pincode'),
   },
   { key: 'email', label: 'Email', format: (ctx) => (ctx.answers.email as string) ?? '', editableFor: editableForFoundOrNot('email') },
+  // Business Loan: only the registered address is editable (2026-10-17 instruction — "only
+  // address will be editable nothing else not gst not address nothing else"). Business name,
+  // entity type, and GST number are shown read-only in PROFILE_FIELDS below instead.
+  {
+    key: 'blBusinessAddress',
+    label: 'Registered address',
+    format: (ctx) => (ctx.answers.blBusinessAddress as string) ?? '',
+    editableFor: () => true,
+  },
 ];
 
 export function isEditableField(key: string): key is EditableField['key'] {
@@ -79,6 +91,10 @@ export const PROFILE_FIELDS: ProfileField[] = [
   { key: 'pan', label: 'PAN', editable: () => false, format: (ctx) => (ctx.answers.pan ? maskPan(ctx.answers.pan as string) : '') },
   { key: 'creditScore', label: 'CIBIL score', editable: () => false, format: (ctx) => (ctx.answers.creditScore ? String(ctx.answers.creditScore) : '') },
   ...EDITABLE_FIELDS.map((f) => ({ key: f.key, label: f.label, editable: f.editableFor, format: f.format })),
+  { key: 'blBusinessName', label: 'Business name', editable: () => false, format: (ctx) => (ctx.answers.blBusinessName as string) ?? '' },
+  { key: 'blBusinessType', label: 'Entity type', editable: () => false, format: (ctx) => (ctx.answers.blBusinessType as string) ?? '' },
+  { key: 'blGstNumber', label: 'GST number', editable: () => false, format: (ctx) => (ctx.answers.blGstNumber as string) ?? '' },
+  { key: 'blOfficeAddress', label: 'Office address', editable: () => false, format: (ctx) => (ctx.answers.blOfficeAddress as string) ?? '' },
   {
     key: 'product',
     label: 'Product',

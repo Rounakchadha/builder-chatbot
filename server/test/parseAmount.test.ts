@@ -28,4 +28,18 @@ describe('parseAmount', () => {
     expect(parseAmount('')).toBeNull();
     expect(parseAmount(undefined)).toBeNull();
   });
+
+  it('parses a negative amount instead of silently dropping the sign', () => {
+    expect(parseAmount('-5000')).toBe(-5000);
+  });
+
+  it('rejects "LPA" instead of misreading it as a lakh unit', () => {
+    expect(parseAmount('6 LPA')).toBeNull();
+    expect(parseAmount('6LPA')).toBeNull();
+  });
+
+  it('rejects trailing commentary instead of silently truncating it', () => {
+    expect(parseAmount('50000 for a car')).toBeNull();
+    expect(parseAmount('about 12000 a month')).toBeNull();
+  });
 });

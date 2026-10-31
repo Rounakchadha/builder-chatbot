@@ -5,11 +5,16 @@ import { logger } from '../lib/logger';
 import { finfinityClient } from './finfinityClient';
 
 /** Extra identity fields the real CIBIL/Experian pull needs alongside PAN — not used by the mock,
- * which only needs the PAN to generate a deterministic score. */
+ * which only needs the PAN to generate a deterministic score. `customerId`/`token`, when present,
+ * let pull() try the cheap fetchbureaudata lookup first (see fetchBureauData's own doc comment)
+ * before falling back to the "not implemented" error. */
 export interface BureauPullContext {
   dob?: string;
   pincode?: string;
   email?: string;
+  customerId?: number;
+  token?: string;
+  productCode?: string;
 }
 
 export interface BureauService {
@@ -81,6 +86,9 @@ export interface RealBureauApi {
   generateBureau(input: GenerateBureauInput): Promise<GenerateBureauResponse>;
   validateBureauCibil(input: { customerId: number; otpSessionId: string; phoneNumber: string; questionKey: string; answerKey: string; challengeConfigGuid: string; token: string }): Promise<BureauPull>;
   validateBureauExperian(input: { customerId: number; otpSessionId: string; phoneNumber: string; otp: string; token: string }): Promise<BureauPull>;
+  /** Reads back bureau data ALREADY on file for this customer/product — does not trigger a new
+   * pull. See fetchBureauData's own doc comment for the full caveat on the response shape. */
+  fetchBureauData(input: { customerId: number; productCode: string; token: string }): Promise<BureauPull | null>;
 }
 
 interface ValidateBureauResponse {
@@ -145,6 +153,50 @@ export const realBureauApi: RealBureauApi = {
     );
     return { creditScore: results[0].bureauScore, source: 'experian', accessToken: results[1]?.access, refreshToken: results[1]?.refresh };
   },
+  // STITCHED IN 2026-10-31 ON AN UNCONFIRMED RESPONSE SHAPE — user said "stitch it for now, I'll
+  // ask Bitsflow how this works" and will confirm the real shape later. Confirmed LIVE (not
+  // guessed) that /leadflow/fetchbureaudata is a READ-ONLY lookup of bureau data already on file —
+  // calling it for a customer with no completed bureau pull returns `{data: [], activity:
+  // {bureau_score: ""}}` (verified against a real UAT customer, 2026-10-31). The shape when data
+  // DOES exist is NOT yet confirmed — the only sample seen so far is a raw CIBIL/TrueLink
+  // GetCustomerAssetsResponse (riskScore under Borrower.CreditScore), which the user pasted from
+  // an unconfirmed source, not a verified real `data` payload from this endpoint. The parsing below
+  // is a best-effort guess at where that shape could land inside `data` — it tries a few plausible
+  // nestings and gives up cleanly (returns null, doesn't throw) if none match, rather than silently
+  // misreading garbage as a real score. TODO(remind-user): revisit once Bitsflow confirms the real
+  // populated response shape, and replace this guessing with the confirmed field path.
+  async fetchBureauData(input) {
+    const res = await finfinityClient.post<{
+      data?: unknown[];
+      activity?: { bureau_score?: string | number };
+      error_msg?: string;
+    }>(
+      '/leadflow/fetchbureaudata',
+      { customer_id: input.customerId, product_code: input.productCode },
+      { token: input.token, retryOnTransient: false },
+    );
+
+    // Plain path, if Finfinity ever just echoes the score back directly (seen empty as "" for a
+    // customer with no data — treat that, and any non-numeric junk, as "nothing here yet").
+    const plainScore = Number(res.activity?.bureau_score);
+    if (res.activity?.bureau_score && !Number.isNaN(plainScore) && plainScore > 0) {
+      return { creditScore: plainScore, source: 'bureau' };
+    }
+
+    // Guessed nesting for the raw CIBIL/TrueLink shape the user showed — UNCONFIRMED, see the
+    // block comment above. Walks `data[0]` (or `data` itself, if it's an object, not an array) down
+    // the same path the sample document used, failing closed (null) if any step doesn't exist
+    // rather than throwing on a shape mismatch.
+    const first = Array.isArray(res.data) ? res.data[0] : res.data;
+    const riskScore = (first as any)?.GetCustomerAssetsResponse?.GetCustomerAssetsSuccess?.Asset?.TrueLinkCreditReport?.Borrower?.CreditScore?.riskScore;
+    const parsed = Number(riskScore);
+    if (riskScore !== undefined && !Number.isNaN(parsed) && parsed > 0) {
+      logger.warn({ event: 'bureau_fetch_unconfirmed_shape_matched', customerId: input.customerId }, 'fetchbureaudata matched the UNCONFIRMED guessed response shape — flag to confirm with Bitsflow whether this is reliable');
+      return { creditScore: parsed, source: 'bureau' };
+    }
+
+    return null;
+  },
 };
 
 /** See RealBureauApi's doc comment — the real bureau check needs a new interactive step (a CIBIL
@@ -152,11 +204,25 @@ export const realBureauApi: RealBureauApi = {
  * be implemented as a drop-in swap the way Dedupe/PAN/Lead/Status could be. generateBureau() and
  * validateBureauCibil/Experian() above are ready for whenever that step gets designed. */
 class RealBureauService implements BureauService {
-  async pull(_pan: string, _context?: BureauPullContext): Promise<BureauPull> {
+  async pull(_pan: string, context?: BureauPullContext): Promise<BureauPull> {
+    // Best-effort cheap check (2026-10-31, unconfirmed shape — see fetchBureauData's own comment):
+    // if the caller already has a customerId/token (e.g. a lead already created this conversation)
+    // and this customer happens to already have a completed real bureau pull on file, use it
+    // instead of failing outright. Falls through to the original "not implemented" error below for
+    // every other case — a brand-new customer with no prior pull, which is still every customer
+    // today, since the interactive generatebureau/validatebureau step isn't wired into the flow yet.
+    if (context?.customerId && context?.token) {
+      const fetched = await realBureauApi.fetchBureauData({ customerId: context.customerId, productCode: context.productCode ?? 'PL', token: context.token }).catch((err) => {
+        logger.warn({ err, event: 'bureau_fetch_failed' }, 'fetchbureaudata call failed — falling back to the usual "not implemented" error');
+        return null;
+      });
+      if (fetched) return fetched;
+    }
     throw new Error(
       'RealBureauService.pull() is intentionally not implemented — the real bureau check is a two-step, interactive ' +
         'flow (a CIBIL question or an Experian OTP), not a single score lookup. See realBureauApi in this file and ' +
-        "bureau_api_payloads.txt; this needs a new flow step designed before it can be wired in.",
+        "bureau_api_payloads.txt; this needs a new flow step designed before it can be wired in. (fetchbureaudata was " +
+        'tried first if a customerId/token was available — see fetchBureauData — but returned nothing for this customer.)',
     );
   }
 }

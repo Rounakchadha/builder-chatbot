@@ -14,3 +14,7 @@ server/prisma/dev.db
 # Contains a real test customer's PII (name/PAN/mobile/email/DOB/income/CIBIL score) captured from
 # a live UAT test transcript — never commit this.
 cibil_profile.txt
+
+# Redis's own on-disk snapshot dumps (local dev only — never anything to commit or deploy).
+dump.rdb
+server/dump.rdb

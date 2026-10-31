@@ -45,6 +45,10 @@ export interface LeadService {
   /** Syncs income/EMI/property details onto an already-created lead. `token` is the most recent
    * access token captured this conversation. */
   updateLead(leadId: string, financials: LeadFinancials, token?: string): Promise<void>;
+  /** Records the customer's chosen tenure for whichever offer they picked — POST
+   * /leadflow/setbrefinanceroffertenure, confirmed live (2026-10-15) to work identically across
+   * Home Loan, LAP, and Personal Loan leads (same payload shape, no product-specific quirks). */
+  setOfferTenure(leadId: string, tenureMonths: number, token?: string): Promise<void>;
 }
 
 /**
@@ -61,20 +65,38 @@ class MockLeadService implements LeadService {
   async updateLead(): Promise<void> {
     logger.info({ event: 'lead_update_mock' }, 'mock lead update (no-op — nothing real to sync)');
   }
+
+  async setOfferTenure(): Promise<void> {
+    logger.info({ event: 'lead_set_offer_tenure_mock' }, 'mock offer-tenure select (no-op — nothing real to sync)');
+  }
 }
 
 /** Only "fresh" is a confirmed real value (from Ritendra's example payload) — the rest (balance
  * transfer, LAP-specific) are a best-effort guess pending confirmation of the real enum. */
 function mapLoanType(loanType: string): string {
-  if (loanType.includes('Balance transfer')) return 'balance_transfer';
+  // Was 'balance_transfer' — confirmed live (2026-10-21) that updatelead rejects it outright for
+  // BOTH Home Loan and LAP ("Loan type 'Balance Transfer' is not valid for product HL/LAP"),
+  // meaning every Balance Transfer customer's income/EMI silently never reached the real lead.
+  // 'loan_takeover' is the real value (partner-confirmed, re-verified live on fresh HL and LAP
+  // leads 76137/76138 — "Lead Updated Successfully" both times). A 'bt+topup' value also exists
+  // and was verified working too, but isn't wired in — no top-up option exists anywhere in this
+  // flow for the customer to actually choose it (2026-10-21 instruction: "topup is not an option").
+  if (loanType.includes('Balance transfer')) return 'loan_takeover';
   if (loanType === 'Loan against property (LAP)') return 'lap';
   return 'fresh'; // 'Fresh purchase' or 'Property purchase'
 }
 
-/** Our "Home loan" / "Loan against property" display strings -> the real backend's product codes. */
+/** Our display strings -> the real backend's product codes for create_anacity_lead. 'GL'/'PL'/'BL'
+ * confirmed live against UAT (2026-10-16) — same call, same real RM-in-response behavior as HL/LAP,
+ * now the MAIN lead-creation path for every product (superseding createcorplead, which never
+ * returned an RM — see goldLoan.service.ts/businessLoan.service.ts, now updated to use this too). */
 export const PRODUCT_CODE: Record<string, string> = {
   'Home loan': 'HL',
   'Loan against property': 'LAP',
+  'Loan Against Securities': 'LAS',
+  'Gold Loan': 'GL',
+  'Personal Loan': 'PL',
+  'Business Loan': 'BL',
 };
 
 // Confirmed live against UAT (2026-09-23): "FINFINITY" (the docs' example value) is not a real
@@ -134,11 +156,17 @@ class RealLeadService implements LeadService {
    * "Apartment/Flat" -> their "apartment/flat") — applying that pattern to property_type too, since
    * it wasn't shown non-blank in their example. */
   async updateLead(leadId: string, financials: LeadFinancials, token?: string): Promise<void> {
-    // seller_type/completion_status/carpet_area are collected for Finfinity's record-keeping only
-    // — never asked of the customer, never shown to them, and not used in our own eligibility math.
-    // Per Ritendra: always send "builder" for seller_type (even though "individual" is a valid
-    // option) and a fixed carpet_area of 1000. completion_status is "completed" unless the chosen
-    // property/collateral is a plot, in which case it's "yet_to_start" (a plot has nothing built yet).
+    // seller_type/completion_status/carpet_area/resale_flag are collected for Finfinity's record-
+    // keeping only — never asked of the customer, never shown to them, and not used in our own
+    // eligibility math. Per Ritendra: "builder" for seller_type when a property's actually been
+    // identified (even though "individual" is a valid option) — but blank when it hasn't, since
+    // there's no seller at all yet to describe (2026-10-16 direct instruction). A fixed carpet_area
+    // of 1000, and resale_flag: false (never a resale). completion_status is "completed" unless the
+    // chosen property/collateral is a plot, in which case it's "yet_to_start" (a plot has nothing
+    // built yet). resale_flag doesn't come back in updatelead's own response either way (confirmed
+    // live, 2026-10-08 — identical response whether sent true/false/"Yes"/1/omitted/a bogus field
+    // name), but a real lead (75305) was confirmed changed on Finfinity's own internal side after
+    // sending it, so it is a real field.
     const isPlot = /plot/i.test(financials.propertyType ?? '') || /plot/i.test(financials.collateralType ?? '');
 
     await finfinityClient.post(
@@ -153,15 +181,33 @@ class RealLeadService implements LeadService {
         property_identified: financials.propertyIdentified ? 'Yes' : 'No',
         property_type: financials.propertyType?.toLowerCase() ?? '',
         occupancy_type: financials.occupancy?.toLowerCase().replace(/[^a-z]+/g, '_'),
-        collateral_type: financials.collateralType?.toLowerCase(),
+        // Was a plain .toLowerCase() with no separator normalization, unlike occupancy_type right
+        // above it — broke any multi-word option (e.g. "School/College" -> "school/college",
+        // "Nursing Home" -> "nursing home") and was confirmed live (2026-10-16) to get "APMC"
+        // rejected outright as "Invalid collateral type" even single-worded. Normalizing to match
+        // occupancy_type's pattern fixes the multi-word cases; APMC's rejection is a separate,
+        // already-flagged issue (its own value may simply not be in their accepted list at all).
+        collateral_type: financials.collateralType?.toLowerCase().replace(/[^a-z]+/g, '_'),
         property_value: financials.propertyValue,
-        seller_type: 'builder',
+        seller_type: financials.propertyIdentified ? 'builder' : '',
         completion_status: isPlot ? 'yet_to_start' : 'completed',
         carpet_area: '1000',
+        resale_flag: false,
       },
       { token },
     );
   }
+
+  async setOfferTenure(leadId: string, tenureMonths: number, token?: string): Promise<void> {
+    // retryOnTransient defaults to true (safe — this just records a choice, not a creation) — no
+    // override needed, unlike the non-idempotent lead-creation calls above.
+    await finfinityClient.post(
+      '/leadflow/setbrefinanceroffertenure',
+      { leadid: Number(leadId), hasMultipleTenure: 'N', tenure: String(tenureMonths) },
+      { token },
+    );
+  }
+
 }
 
 export const leadService: LeadService = env.FINFINITY_API_BASE_URL ? new RealLeadService() : new MockLeadService();

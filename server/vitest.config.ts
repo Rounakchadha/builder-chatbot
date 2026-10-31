@@ -8,7 +8,7 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      '@loan-chatbot/shared': path.resolve(__dirname, '../shared/src/index.ts'),
+      '@builder-chatbot/shared': path.resolve(__dirname, '../shared/src/index.ts'),
     },
   },
 });

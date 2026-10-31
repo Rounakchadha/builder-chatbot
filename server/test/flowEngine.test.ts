@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { applicablePath, getStep, nextStepId } from '../src/flow-engine/engine';
 import type { StepContext } from '../src/flow-engine/types';
-import { CHECK_ELIGIBILITY, CHECK_EXISTING_APPLICATION } from '@loan-chatbot/shared';
+import { CHECK_ELIGIBILITY, CHECK_EXISTING_APPLICATION } from '@builder-chatbot/shared';
 import { homeLoanFlow } from '../src/flows/homeLoan';
 
 function ctxWith(answers: Record<string, unknown>): StepContext {

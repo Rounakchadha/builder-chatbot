@@ -1,5 +1,16 @@
+import { Agent } from 'undici';
 import { logger } from '../lib/logger';
 import { env } from '../config/env';
+
+// Node's global fetch pools/reuses keep-alive TCP connections by default. Over a long-running
+// server process, a pooled connection to Finfinity's backend can go stale (silently dropped by
+// their load balancer without a proper FIN/RST) — the NEXT request to reuse it then hangs until
+// our own AbortSignal.timeout fires, even though a brand-new connection to the same endpoint at
+// the same moment succeeds in well under a second (confirmed directly: a stuck server request
+// timed out while a concurrent curl to the identical URL returned in ~87ms). A short
+// keepAliveTimeout recycles idle sockets proactively, well before they can go stale, so this never
+// shows up as a false "API is slow" to a customer.
+const finfinityDispatcher = new Agent({ keepAliveTimeout: 4_000, keepAliveMaxTimeout: 4_000 });
 
 /**
  * Every real Finfinity backend endpoint (searchcustomer, getpandetail, generateotpv2/
@@ -66,6 +77,19 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** Security-review finding, 2026-10-23: logger.ts's redact list only catches a fixed set of known
+ * field names (pan/mobile/otp) — but `error_dtl`/`detail` is Finfinity's own free-form error body,
+ * which can (and sometimes does) echo back whatever value we just submitted, under field names we
+ * don't control and can't allowlist in advance. Every call site that logs this (see
+ * businessLoan.service.ts, and the http-error/error-envelope branches below) only ever uses it for
+ * diagnostics, never for actual logic, so it's safe to strip here at the source rather than trying
+ * to redact it after the fact at every logging call site. */
+function redactDetail(value: unknown): unknown {
+  if (value == null || typeof value === 'number' || typeof value === 'boolean') return value;
+  if (typeof value === 'string') return value.length > 80 ? `${value.slice(0, 80)}…[truncated]` : value;
+  return '[object withheld from logs — Finfinity error detail payloads can echo back submitted values]';
+}
+
 async function requestOnce<T>(method: 'GET' | 'POST', path: string, body: unknown, opts: { token?: string } | undefined, attempt: number): Promise<T> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (opts?.token) headers.Authorization = `Bearer ${opts.token}`;
@@ -83,6 +107,8 @@ async function requestOnce<T>(method: 'GET' | 'POST', path: string, body: unknow
       headers,
       body: body !== undefined ? JSON.stringify(body) : undefined,
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      // @ts-expect-error -- `dispatcher` is an undici/Node-fetch extension, not in the lib.dom.d.ts fetch() typing
+      dispatcher: finfinityDispatcher,
     });
   } catch (err) {
     const timedOut = err instanceof Error && err.name === 'TimeoutError';
@@ -105,17 +131,49 @@ async function requestOnce<T>(method: 'GET' | 'POST', path: string, body: unknow
   // status is always a real failure regardless of what shape the body happens to be in.
   if (!res.ok) {
     const detail = (envelope as unknown as { detail?: string })?.detail;
+    // Security-review finding, 2026-10-23: there's no refresh-token call anywhere against this
+    // backend yet (no endpoint for it is documented in this codebase, and inventing one without
+    // confirming it with Finfinity would be guessing) — so an expired access token just failed here
+    // with the same totally generic message as every other error, leaving the customer stuck with
+    // no idea what actually went wrong or that starting over would fix it. This at least tells them
+    // the truth instead of a blank "something went wrong."
+    const message = res.status === 401 ? 'Your session needs to be refreshed — please restart your application.' : detail || envelope.error_msg || `Finfinity API error (HTTP ${res.status})`;
     logger.warn({ event: 'finfinity_api_http_error', path, attempt, httpStatus: res.status, detail, durationMs: Date.now() - startedAt }, 'Finfinity API returned a non-2xx status');
-    throw new FinfinityApiError(detail || envelope.error_msg || `Finfinity API error (HTTP ${res.status})`, envelope.error_code || `HTTP_${res.status}`, envelope.error_dtl);
+    throw new FinfinityApiError(message, envelope.error_code || `HTTP_${res.status}`, redactDetail(envelope.error_dtl));
   }
 
   if (envelope.error_code && !SUCCESS_FLAVORED_ERROR_CODES.has(envelope.error_code)) {
     logger.warn({ event: 'finfinity_api_error', path, attempt, code: envelope.error_code, msg: envelope.error_msg, durationMs: Date.now() - startedAt }, 'Finfinity API returned an error envelope');
-    throw new FinfinityApiError(envelope.error_msg || 'Finfinity API error', envelope.error_code, envelope.error_dtl);
+    throw new FinfinityApiError(envelope.error_msg || 'Finfinity API error', envelope.error_code, redactDetail(envelope.error_dtl));
   }
 
   logger.info({ event: 'finfinity_api_success', path, attempt, durationMs: Date.now() - startedAt }, 'Finfinity API call succeeded');
   return envelope.data;
+}
+
+// Security-review finding, 2026-10-23: nothing capped how many calls to Finfinity could be in
+// flight at once — if their backend ever slowed down, every simultaneous customer conversation
+// could pile up waiting on it at the same time, with nothing to throttle or fail fast, tying up
+// this server's own request-handling capacity along with it. A simple counting semaphore (no new
+// dependency needed) caps concurrent outbound calls; anything over the cap queues instead of firing
+// immediately. 20 is generous for this app's real traffic today while still bounding the worst case.
+const MAX_CONCURRENT_FINFINITY_CALLS = 20;
+let inFlight = 0;
+const waiters: Array<() => void> = [];
+
+async function acquireSlot(): Promise<void> {
+  if (inFlight < MAX_CONCURRENT_FINFINITY_CALLS) {
+    inFlight++;
+    return;
+  }
+  await new Promise<void>((resolve) => waiters.push(resolve));
+  inFlight++;
+}
+
+function releaseSlot(): void {
+  inFlight--;
+  const next = waiters.shift();
+  if (next) next();
 }
 
 async function request<T>(
@@ -124,13 +182,18 @@ async function request<T>(
   body?: unknown,
   opts?: { token?: string; retryOnTransient?: boolean },
 ): Promise<T> {
+  await acquireSlot();
   try {
-    return await requestOnce<T>(method, path, body, opts, 1);
-  } catch (err) {
-    if (opts?.retryOnTransient === false || !isTransientFailure(err)) throw err;
-    logger.warn({ event: 'finfinity_api_retry', path }, 'transient failure — retrying once after a short pause');
-    await sleep(RETRY_DELAY_MS);
-    return await requestOnce<T>(method, path, body, opts, 2);
+    try {
+      return await requestOnce<T>(method, path, body, opts, 1);
+    } catch (err) {
+      if (opts?.retryOnTransient === false || !isTransientFailure(err)) throw err;
+      logger.warn({ event: 'finfinity_api_retry', path }, 'transient failure — retrying once after a short pause');
+      await sleep(RETRY_DELAY_MS);
+      return await requestOnce<T>(method, path, body, opts, 2);
+    }
+  } finally {
+    releaseSlot();
   }
 }
 

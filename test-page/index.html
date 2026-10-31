@@ -2,18 +2,96 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<title>finfinity.co.in — sample page hosting the loan chat widget</title>
+<!-- Without this, mobile browsers render the page at a fake ~980px desktop width and shrink
+     everything to fit — which is why nothing looked mobile-responsive at all until this was
+     added. Any REAL site embedding the widget almost certainly already has one of these in its
+     own <head> (standard practice on essentially every modern site) — this is only missing here
+     because this is just a bare-bones local stand-in page, not a real one. -->
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Count Infinity AI — Loan Eligibility Assistant</title>
 <style>
-  body { font-family: system-ui, sans-serif; max-width: 720px; margin: 60px auto; padding: 0 20px; color: #1B2B27; }
-  h1 { font-size: 22px; }
+  /* Restyled 2026-10-30 to match CIS's own personal-suite-updated.html landing screen (dark
+     background, centered serif hero, "Open Apply Now journey" + theme pills) instead of staying a
+     plain white dev stand-in — see the <body> comments below for how it's wired to the real widget.
+     Exact Fraunces webfont isn't loaded here (this is just a local dev page, not the shipped
+     widget) — Georgia is CIS's own declared fallback for that font, close enough for this page. */
+  :root {
+    --bg: #FCF9F1;
+    --ink: #1A1710;
+    --ink-soft: #4A4330;
+    --line: #D9C7A4;
+  }
+  body.is-dark {
+    --bg: #1C1F21;
+    --ink: #F8F2E7;
+    --ink-soft: #DED5C5;
+    --line: #444749;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Plus Jakarta Sans", system-ui, sans-serif;
+    transition: background .2s ease, color .2s ease;
+  }
+  .topbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 20px; height: 56px;
+    background: #141719; color: #EEE9DE;
+    font-size: 13px;
+  }
+  .theme-toggle { display: flex; gap: 8px; }
+  .theme-toggle button {
+    border: 0; border-radius: 11px; padding: 10px 15px;
+    font: 500 13px/1 "Plus Jakarta Sans", system-ui, sans-serif;
+    background: transparent; color: #EEE9DE; cursor: pointer;
+  }
+  .theme-toggle button[aria-pressed="true"] { background: #EAD7A8; color: #211D16; }
+  .hero {
+    min-height: calc(100vh - 56px);
+    display: grid; justify-items: center; align-content: center; gap: 18px;
+    padding: 80px 24px 24px; text-align: center;
+  }
+  .hero h1 {
+    margin: 0; font: 400 32px/1.25 Fraunces, Georgia, serif; color: var(--ink);
+  }
+  .hero p { margin: 0; font-size: 13px; color: var(--ink-soft); }
+  .hero .pill-primary, .hero .pill {
+    font: 500 14px/1 "Plus Jakarta Sans", system-ui, sans-serif;
+    padding: 12px 22px; border-radius: 100px; border: 1px solid var(--line);
+    background: #fff; color: #211D17; cursor: pointer;
+  }
+  .hero .pill-row { display: flex; gap: 8px; margin-top: 0; }
+
   /* Dev-only control — never ships with the real widget embed, just this local test page. */
-  #admin-bar { margin-top: 24px; padding: 10px 14px; border: 1px dashed #999; border-radius: 8px; font-size: 13px; color: #555; }
-  #admin-bar button { font-size: 13px; padding: 4px 10px; cursor: pointer; }
+  #admin-bar {
+    position: fixed; left: 16px; bottom: 16px; max-width: 360px;
+    padding: 10px 14px; border: 1px dashed #99897a; border-radius: 8px;
+    font-size: 12px; color: var(--ink-soft); background: var(--bg);
+  }
+  #admin-bar button { font-size: 12px; padding: 4px 10px; cursor: pointer; }
 </style>
 </head>
 <body>
-  <h1>finfinity — Home Loans</h1>
-  <p>This is a stand-in for a real website page. The loan eligibility chat widget below is embedded via a single script tag — click the round button in the bottom-right corner to open it.</p>
+  <nav class="topbar" aria-label="Preview controls">
+    <span>Count Infinity AI</span>
+    <div class="theme-toggle" role="group" aria-label="Colour theme">
+      <button type="button" id="topbar-light" aria-pressed="true">Light</button>
+      <button type="button" id="topbar-dark" aria-pressed="false">Dark</button>
+    </div>
+  </nav>
+
+  <main class="hero">
+    <h1>Loan Eligibility Assistant</h1>
+    <p>Personal Suite · Count Infinity Services</p>
+    <button type="button" class="pill-primary" id="open-journey">Open Apply Now journey</button>
+    <div class="pill-row">
+      <button type="button" class="pill" id="mode-light">Light mode</button>
+      <button type="button" class="pill" id="mode-dark">Dark mode</button>
+    </div>
+  </main>
 
   <div id="admin-bar">
     <strong>Admin (this test page only):</strong>
@@ -23,7 +101,19 @@
     <button id="admin-new-customer">Start fresh (new customer)</button>
   </div>
 
-  <script src="./widget.js" data-api-base="http://localhost:8091" defer></script>
+  <!-- ?v= is bumped every time widget.js is rebuilt, so the browser can never serve a stale cached
+       copy just from a normal reload — this avoids repeat "nothing happened" reports that turn out
+       to be an old bundle still running. data-hide-launcher: this page now opens the widget from
+       its own "Open Apply Now journey" button (matching CIS's own #reopen button), so the widget's
+       floating launcher would be a redundant second way in — same reasoning as the
+       FINFINITY-BRE-MAIN embed's own data-hide-launcher use.
+
+       TWO DESIGNS, ONE SWITCH: "./widget.js" below is the CIS-themed build (widget/). The original
+       Finfinity green/dark design — ported as-is from "builder chatbot copy" — is also built, as
+       "./widget-finfinity.js" (widget-finfinity/). Both read the exact same data-api-base/
+       data-hide-launcher attributes and talk to the exact same backend, so switching which design
+       is live is ONE line: change the src below between the two filenames. -->
+  <script src="./widget.js?v=20261031k" data-api-base="http://192.168.1.121:8091" data-hide-launcher="true" defer></script>
   <script>
     // Clears the widget's own remembered-identity + session tokens (see widget/src/app.ts's
     // IDENTITY_STORAGE_KEY/STORAGE_KEY) and reloads — a totally blank slate, asking for mobile+OTP
@@ -33,6 +123,28 @@
       localStorage.removeItem('lc_session_token_v1');
       location.reload();
     };
+
+    // "Open Apply Now journey" opens the actual widget, same pattern as the FINFINITY-BRE-MAIN
+    // embed's own window.__lcWidgetInstance.open() button wiring — the widget script is `defer`,
+    // so wait for it to have run before wiring any of this.
+    window.addEventListener('DOMContentLoaded', () => {
+      document.getElementById('open-journey').onclick = () => window.__lcWidgetInstance?.open();
+
+      // One shared theme state drives both this page's own look AND the widget's theme — matching
+      // CIS's own real file, where the top-bar toggle, the "Light/Dark mode" pills, and the actual
+      // dialog's theme are all just one `body.is-dark` class underneath.
+      function applyTheme(isDark) {
+        document.body.classList.toggle('is-dark', isDark);
+        window.__lcWidgetInstance?.setTheme(isDark);
+        [document.getElementById('topbar-light'), document.getElementById('topbar-dark')].forEach((b, i) => {
+          b.setAttribute('aria-pressed', String((i === 1) === isDark));
+        });
+      }
+      document.getElementById('topbar-light').onclick = () => applyTheme(false);
+      document.getElementById('topbar-dark').onclick = () => applyTheme(true);
+      document.getElementById('mode-light').onclick = () => applyTheme(false);
+      document.getElementById('mode-dark').onclick = () => applyTheme(true);
+    });
   </script>
 </body>
 </html>

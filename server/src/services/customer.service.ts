@@ -17,21 +17,32 @@ export interface CreateCustomerInput {
 /** Our own persisted identity record — not an external API, just the data layer behind the
  * dedupe check and the "create customer once bureau consent + PAN are collected" step. */
 export const customerService = {
+  /** Upsert by mobileHash, not a hard insert (2026-10-21 fix) — a "new" (dedupe-not-found)
+   * customer's mobile number can genuinely already have a local Customer row from an earlier
+   * attempt (the real Finfinity backend and our own local record are separate systems, so a
+   * repeat identity run for the same number is completely normal, not a data-integrity violation).
+   * `createCustomer`'s plain `prisma.customer.create()` crashed outright on Postgres's unique
+   * constraint every single time this happened, surfacing as a generic "trouble reaching one of
+   * our services" error with no indication of the real cause — confirmed live for mobile 9930XX9090,
+   * which had a row from 06:07 and crashed on every later attempt. Re-running this now just
+   * refreshes the record with the latest answers instead of failing. */
   async create(input: CreateCustomerInput): Promise<{ id: string }> {
-    const customer = await prisma.customer.create({
-      data: {
-        mobileHash: input.mobileHash,
-        mobileMasked: input.mobileMasked,
-        panEncrypted: encryptPii(input.pan),
-        panMasked: maskPan(input.pan),
-        nameEncrypted: encryptPii(input.name),
-        dob: input.dob,
-        email: input.email,
-        pincode: input.pincode,
-        segment: input.segment,
-        creditScore: input.creditScore,
-        bureauSource: input.bureauSource,
-      },
+    const data = {
+      mobileMasked: input.mobileMasked,
+      panEncrypted: encryptPii(input.pan),
+      panMasked: maskPan(input.pan),
+      nameEncrypted: encryptPii(input.name),
+      dob: input.dob,
+      email: input.email,
+      pincode: input.pincode,
+      segment: input.segment,
+      creditScore: input.creditScore,
+      bureauSource: input.bureauSource,
+    };
+    const customer = await prisma.customer.upsert({
+      where: { mobileHash: input.mobileHash },
+      create: { mobileHash: input.mobileHash, ...data },
+      update: data,
     });
     return { id: customer.id };
   },

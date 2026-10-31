@@ -35,7 +35,7 @@ export type Segment = (typeof SEGMENTS)[number];
 // step). Home loan/Loan against property continue into the existing, unchanged flow (including
 // the Fresh purchase vs Balance transfer sub-choice that follows); the other three branch into
 // their own short flows right after this question (see flows/personalLoan.ts etc.).
-export const PRODUCT_OPTIONS = ['Home loan', 'Loan against property', 'Personal loan', 'Gold loan', 'Business loan'] as const;
+export const PRODUCT_OPTIONS = ['Home loan', 'Loan against property', 'Personal Loan', 'Gold Loan', 'Business Loan', 'Loan Against Securities'] as const;
 export type ProductOption = (typeof PRODUCT_OPTIONS)[number];
 
 // ---------- Personal loan ----------
@@ -44,18 +44,31 @@ export const QUALIFICATION_TYPES = ['Below 10th', '10th pass', '12th pass', 'Gra
 export const RESIDENCE_TYPES = ['Owned', 'Rented', 'Family owned'] as const;
 
 // ---------- Gold loan ----------
-export const GOLD_TYPES = ['Jewellery', 'Coin', 'Bars'] as const;
+export const GOLD_TYPES = ['Jewellery', 'Coin', 'Bars', 'Mixed'] as const;
 
 export const GOLD_PURITY_OPTIONS = ['18k', '20k', '22k', '24k', 'Not sure'] as const;
 
 export const GOLD_LOAN_PURPOSES = ['Personal need', 'Medical', 'Education', 'Business', 'Agriculture', 'Wedding', 'Other'] as const;
 
 // ---------- Business loan ----------
-export const BUSINESS_LOAN_PURPOSES = ['Working capital', 'Machinery purchase', 'Expansion', 'Inventory purchase'] as const;
+export const BUSINESS_LOAN_PURPOSES = ['Working capital', 'Purchase/Upgrade of Machinery', 'Renovation of Business', 'Expansion', 'Inventory purchase'] as const;
 
 export const BUSINESS_TYPES = ['Proprietorship', 'Partnership', 'LLP', 'Private limited', 'Public limited', 'OPC'] as const;
 
 export const INDUSTRY_TYPES = ['Manufacturing', 'Trading', 'Services'] as const;
+
+// ---------- Loan against securities (shares / mutual funds) ----------
+export const LAS_TYPES = ['Loan Against Shares', 'Loan Against Mutual Funds'] as const;
+
+export const LAS_INVESTMENT_VALUE_BANDS = ['Below ₹2 lakh', '₹2 lakh to ₹5 lakh', '₹5 lakh to ₹10 lakh', '₹10 lakh to ₹25 lakh', 'Above ₹25 lakh'] as const;
+
+export const LAS_MUTUAL_FUND_TYPES = ['Equity mutual funds', 'Debt mutual funds', 'Hybrid / other funds', 'Not sure'] as const;
+
+export const LAS_MUTUAL_FUND_HOLDING_MODES = ['Through an investment app or AMC', 'In a demat account', 'Not sure'] as const;
+
+export const LAS_DEPOSITORY_PARTICIPANTS = ['CDSL', 'NSDL', 'Not Sure'] as const;
+
+export const LAS_FUNDS_TIMELINE = ['As soon as possible', 'Within 7 days', 'Within a month'] as const;
 
 export const LOAN_TYPES: Record<string, string[]> = {
   'Home loan': ['Fresh purchase', 'Balance transfer (BT)'],
@@ -123,13 +136,18 @@ export const ChatTurnResponse = z.object({
 });
 export type ChatTurnResponse = z.infer<typeof ChatTurnResponse>;
 
+// Security-review finding, 2026-10-23: none of these had an upper bound — a customer's single chat
+// answer (name, address, a free-typed amount) has no legitimate reason to be huge, so an unbounded
+// string here was an open door to a resource-exhaustion/log-bloat vector (a multi-megabyte "value").
+// 1000 chars comfortably covers the longest real answer in this flow (a full business address plus
+// landmark); finer per-field limits are still each step's own job (see each flow's `validate`).
 export const ChatMessageRequest = z.object({
-  sessionToken: z.string().optional(),
-  stepId: z.string().optional(), // omitted on the very first call
-  value: z.string().optional(), // the answer, or free-typed text
+  sessionToken: z.string().max(128).optional(),
+  stepId: z.string().max(100).optional(), // omitted on the very first call
+  value: z.string().max(1000).optional(), // the answer, or free-typed text
   // Only read when starting a brand-new session (no sessionToken) — see identity.service.ts.
   // Lets a customer re-checking eligibility within the remembered window skip mobile+OTP entirely.
-  identityToken: z.string().optional(),
+  identityToken: z.string().max(128).optional(),
 });
 export type ChatMessageRequest = z.infer<typeof ChatMessageRequest>;
 
@@ -165,4 +183,23 @@ export interface EligibilityResultPayload {
   rm: { name: string; phone: string; email: string };
   leadId?: string;
   leadCreated: boolean;
+  /** Home Loan/LAP only — set when the applicant's PAN is a non-individual entity (company, firm/
+   * LLP, HUF, trust, etc. — identified by the PAN's 4th character not being 'P'). There's no
+   * eligibility journey built for entity applicants yet, so `eligible` is always false and no
+   * income/property questions were ever asked — see flows/homeLoan.ts's isIndividualPan. */
+  entityNotSupported?: boolean;
+  /** Business Loan only — set when the applicant's employment segment is 'Salaried', which this
+   * product doesn't support at all (2026-10-17 instruction). `eligible` is always false and no
+   * business questions were asked beyond loan amount/purpose/PAN — see flows/businessLoan.ts's
+   * isSalariedSegment. */
+  segmentNotSupported?: boolean;
+  /** Gold Loan only (security-review finding, 2026-10-23) — the amount/rate shown are computed from
+   * a real weight x purity-rate x LTV formula, but the per-gram rate isn't today's live gold rate
+   * and the rate is a fixed placeholder, so this is a ballpark, not a locked offer. Tells the widget
+   * to label the figure as an estimate rather than presenting it as firm. See flows/goldLoan.ts. */
+  isEstimate?: boolean;
+  /** Home Loan/LAP only (security-review finding, 2026-10-23) — set when the applicant's real DOB
+   * (from the PAN lookup) puts them under 18. There was no minimum-age check at all before this —
+   * `eligible` is always false and no lead is created. See flows/homeLoan.ts's computeResultPayload. */
+  underageNotSupported?: boolean;
 }

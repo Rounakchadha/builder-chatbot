@@ -6,7 +6,7 @@ export default defineConfig({
   plugins: [tailwindcss()],
   resolve: {
     alias: {
-      '@loan-chatbot/shared': path.resolve(__dirname, '../shared/src/index.ts'),
+      '@builder-chatbot/shared': path.resolve(__dirname, '../shared/src/index.ts'),
     },
   },
   build: {
@@ -18,6 +18,10 @@ export default defineConfig({
     },
     cssCodeSplit: false,
     outDir: 'dist',
+    // widget.js ships as a single embeddable <script> tag — lender logo PNGs (tens of KB each)
+    // must be inlined as data URIs rather than emitted as separate files Vite's 4KB default would
+    // otherwise produce, which the embed model has no way to deploy alongside the script.
+    assetsInlineLimit: 300_000,
   },
   server: {
     port: 5173,

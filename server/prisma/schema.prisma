@@ -17,19 +17,29 @@ model Conversation {
   mobileHash    String? // HMAC of verified mobile, never plaintext
   mobileMasked  String? // e.g. "9876X XXXX0", safe to display/log
   customerId    String? // set once the dedupe check matches, or a new Customer is created
-  customer      Customer? @relation(fields: [customerId], references: [id])
+  // Security-review finding, 2026-10-23: no onDelete policy — deleting a Customer with existing
+  // Conversations pointing at it would fail outright with a foreign-key error instead of either
+  // cascading or clearing the link. SetNull (not Cascade): a Conversation is its own real record
+  // worth keeping even if the Customer it once matched is later removed.
+  customer      Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
   panConsent    Boolean?
   status        String   @default("in_progress") // in_progress | completed | abandoned
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
-  messages      Message[]
-  answers       FlowAnswer[]
-  lead          Lead?
-  consentEvents ConsentAudit[]
+  messages         Message[]
+  answers          FlowAnswer[]
+  lead             Lead?
+  consentEvents    ConsentAudit[]
+  plBreComparisons PlBreComparison[]
+  hlBreComparisons HlBreComparison[]
 
   @@index([mobileHash])
   @@index([status])
+  // Security-review finding, 2026-10-23: loadSession's new 30-day age cutoff (see
+  // session.service.ts's SESSION_MAX_AGE_MS) and any future cleanup job both need to scan by age —
+  // with no index here that was a full table scan.
+  @@index([createdAt])
 }
 
 /// A known, deduped identity — the record the Dedupe API is checked against on every new
@@ -59,7 +69,10 @@ model Customer {
 model Message {
   id             String       @id @default(uuid())
   conversationId String
-  conversation   Conversation @relation(fields: [conversationId], references: [id])
+  // Security-review finding, 2026-10-23: no onDelete policy — a transcript has no independent
+  // reason to exist once its Conversation is gone, so it should disappear with it rather than
+  // blocking the delete with a foreign-key error.
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   role           String // bot | user | system
   stepId         String?
   text           String
@@ -74,7 +87,8 @@ model Message {
 model FlowAnswer {
   id             String       @id @default(uuid())
   conversationId String
-  conversation   Conversation @relation(fields: [conversationId], references: [id])
+  // Same reasoning as Message's onDelete above.
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   stepId         String
   value          Json
   createdAt      DateTime     @default(now())
@@ -86,7 +100,8 @@ model FlowAnswer {
 model Lead {
   id                String       @id @default(uuid())
   conversationId    String       @unique
-  conversation      Conversation @relation(fields: [conversationId], references: [id])
+  // Same reasoning as Message's onDelete above — a Lead has no reason to outlive its Conversation.
+  conversation      Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   panEncrypted      String // AES-256-GCM ciphertext, never plaintext
   panMasked         String // e.g. "ABCDE****F"
   nameEncrypted     String?
@@ -94,17 +109,75 @@ model Lead {
   builderLeadId     String? // id returned by the Builder module once wired up
   builderSyncStatus String       @default("pending") // pending | synced | failed
   createdAt         DateTime     @default(now())
+
+  // Security-review finding, 2026-10-23: listApplications (routes/chat.ts) and ensureLead's own
+  // P2002-recovery lookup both query by builderLeadId-adjacent patterns and by this id directly in
+  // status lookups — no index meant a full table scan as Lead rows grow.
+  @@index([builderLeadId])
+}
+
+/// Personal Loan only (2026-10-21) — every time the real Finfinity financer chain computes offers,
+/// our own standalone pre-check BRE (personalLoanEligibility.service.ts) is run in the background
+/// on the exact same facts, purely for comparison — never shown to the customer, never affects
+/// what they see. Persisted (not just logged) so this survives a server restart and can actually be
+/// reviewed later to calibrate/improve our own BRE against real-world outcomes, per direct
+/// instruction: "save the info from their apis and test it against our BRE."
+model PlBreComparison {
+  id              String       @id @default(uuid())
+  conversationId  String
+  // Same reasoning as Message's onDelete above.
+  conversation    Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  leadId          String?
+  facts           Json // the shared PlEligibilityFacts both engines were run against
+  // PlLenderComparisonResult[] (see flows/personalLoan.ts) — ALL 3 lenders each engine attempted,
+  // eligible or not, with whatever rejection reason + raw per-lender payload was available. Was
+  // just the approved-offer list (no reasons, no record a rejected lender was even checked) —
+  // widened 2026-10-24 so a shadow-mode comparison can actually say *why* the two engines disagree.
+  realChainResults Json // financerwiseeligibility's (Bitsflow) per-lender outcome
+  ownBreResults    Json // our pre-check microservice's per-lender outcome
+  createdAt       DateTime     @default(now())
+
+  @@index([conversationId])
+}
+
+/// Home Loan only (2026-10-28) — same shadow-comparison discipline as PlBreComparison above:
+/// every time the real Finfinity getcustomeroffers call computes offers, our own standalone
+/// pre-check BRE (homeLoanEligibility.service.ts, FINFINITY-BRE-MAIN/hl-eligibility-precheck) is
+/// run in the background on the same facts, purely for comparison — never shown to the customer,
+/// never affects what they see. `realChainResults` only ever has the ELIGIBLE side (`offers`) —
+/// getcustomeroffers's own `rejected_lender_list` isn't threaded through eligibility.service.ts's
+/// return type today, so a true full reject-vs-reject comparison isn't possible yet from here.
+model HlBreComparison {
+  id              String       @id @default(uuid())
+  conversationId  String
+  conversation    Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  leadId          String?
+  facts           Json // the shared HlEligibilityFacts both engines were run against
+  realChainResults Json // getcustomeroffers's (Bitsflow) eligible-lender list only (see note above)
+  ownBreResults    Json // our pre-check microservice's per-lender outcome, eligible AND rejected
+  createdAt       DateTime     @default(now())
+
+  @@index([conversationId])
 }
 
 /// Immutable record of every PAN-consent decision, for compliance.
 model ConsentAudit {
   id             String       @id @default(uuid())
   conversationId String
-  conversation   Conversation @relation(fields: [conversationId], references: [id])
+  // Same reasoning as Message's onDelete above.
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   decision       Boolean
+  // Security-review finding, 2026-10-23: a resumed remembered-identity session used to write a row
+  // here identical to a real PAN-consent click (decision: true, no way to tell them apart) even
+  // though no consent decision actually happened in that session — it was inferred from an earlier
+  // one. `source` distinguishes the two: 'mobile_step' is a real consent click, 'identity_resume' is
+  // this session re-asserting a PRIOR session's consent, not a new decision.
+  source         String       @default("mobile_step")
   ipAddress      String
   userAgent      String?
   createdAt      DateTime     @default(now())
+
+  @@index([conversationId])
 }
 
 /// Curated FAQ knowledge base for the RAG-grounded FAQ answers. Embeddings

@@ -33,8 +33,15 @@ function otpMobileRateKey(mobile: string) {
  * message rather than a generic error so the route doesn't need to know the reason. */
 async function enforceOtpMobileRateLimit(mobile: string): Promise<void> {
   const key = otpMobileRateKey(mobile);
-  const count = await redis.incr(key);
-  if (count === 1) await redis.expire(key, OTP_MOBILE_RATE_WINDOW_SECONDS);
+  // Security-review finding, 2026-10-23: incr() and expire() used to be two separate round-trips —
+  // a crash (or a lost connection) between them left the key incremented but with no TTL, which
+  // would then rate-limit this number forever with nothing to ever clear it. A single multi()
+  // pipeline sends both in one round-trip, so either both apply or neither does. Re-setting the TTL
+  // on every call (not just the first) turns this into a sliding window instead of a fixed one —
+  // a harmless, slightly stricter change, and the simplest way to keep this atomic without relying
+  // on Redis 7's EXPIRE NX option, which isn't guaranteed to be available in every deployment target.
+  const results = (await redis.multi().incr(key).expire(key, OTP_MOBILE_RATE_WINDOW_SECONDS).exec()) as [Error | null, number][];
+  const count = results[0][1];
   if (count > OTP_MOBILE_RATE_LIMIT) {
     throw new UserFacingError('Too many OTP requests for this number. Please try again in a few minutes.');
   }
@@ -54,8 +61,9 @@ function duplicateVerifyRateKey(mobile: string) {
 
 export async function enforceDuplicateVerifyRateLimit(mobile: string): Promise<void> {
   const key = duplicateVerifyRateKey(mobile);
-  const count = await redis.incr(key);
-  if (count === 1) await redis.expire(key, DUPLICATE_VERIFY_RATE_WINDOW_SECONDS);
+  // Same atomic incr+expire fix as enforceOtpMobileRateLimit above — see its comment.
+  const results = (await redis.multi().incr(key).expire(key, DUPLICATE_VERIFY_RATE_WINDOW_SECONDS).exec()) as [Error | null, number][];
+  const count = results[0][1];
   if (count > DUPLICATE_VERIFY_RATE_LIMIT) {
     throw new UserFacingError('Too many verification attempts for this account. Please try again later, or enter a different PAN/email.');
   }
@@ -105,8 +113,8 @@ class MockSmsService implements SmsService {
 
     const ok = stored === hashOtp(code);
     if (!ok) {
-      await redis.incr(otpAttemptsKey(conversationId));
-      await redis.expire(otpAttemptsKey(conversationId), OTP_TTL_SECONDS);
+      // Same atomic incr+expire fix as enforceOtpMobileRateLimit above — see its comment.
+      await redis.multi().incr(otpAttemptsKey(conversationId)).expire(otpAttemptsKey(conversationId), OTP_TTL_SECONDS).exec();
     } else {
       await redis.del(otpKey(conversationId));
       await redis.del(otpAttemptsKey(conversationId));

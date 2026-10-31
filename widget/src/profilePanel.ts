@@ -1,4 +1,4 @@
-import type { ChatApi } from './api';
+import { describeApiError, type ChatApi } from './api';
 import { ICON } from './icons';
 
 /**
@@ -23,35 +23,38 @@ export class ProfilePanel {
     this.render(fields);
   }
 
+  // Markup/classes below (.la-detail/.la-detail-line/.la-detail-edit/.la-empty) are copied verbatim
+  // from CIS's design deliverables' "Your details" sidebar — see style.css's CIS component CSS
+  // block, appended 2026-10-28. Only the business logic (edit/save wiring) below is ours.
   private render(fields: { key: string; label: string; value: string; editable: boolean }[]) {
     this.root.innerHTML = '';
     if (fields.length === 0) {
-      this.root.innerHTML = '<div class="lc-sidebar-empty">What you share will show up here as we go — and you can edit it anytime.</div>';
+      this.root.innerHTML = '<div class="la-empty">What you share will show up here as we go — and you can edit it anytime.</div>';
       return;
     }
     for (const f of fields) {
       const row = document.createElement('div');
-      row.className = 'lc-sidebar-field';
+      row.className = 'la-detail';
       row.innerHTML = `
-        <div class="lc-sidebar-label">${f.label}</div>
-        <div class="lc-sidebar-value-row">
-          <span class="lc-sidebar-value">${f.value}</span>
-          ${f.editable ? `<button class="lc-sidebar-edit" aria-label="Edit ${f.label}" type="button">${ICON.edit}</button>` : ''}
+        <label>${f.label}</label>
+        <div class="la-detail-line">
+          <strong>${f.value}</strong>
+          ${f.editable ? `<button class="la-detail-edit" aria-label="Edit ${f.label}" type="button">Edit</button>` : ''}
         </div>
       `;
       if (f.editable) {
-        row.querySelector<HTMLButtonElement>('.lc-sidebar-edit')!.onclick = () => this.startEdit(row, f);
+        row.querySelector<HTMLButtonElement>('.la-detail-edit')!.onclick = () => this.startEdit(row, f);
       }
       this.root.appendChild(row);
     }
   }
 
   private startEdit(row: HTMLElement, field: { key: string; label: string; value: string }) {
-    const valueRow = row.querySelector<HTMLElement>('.lc-sidebar-value-row')!;
+    const valueRow = row.querySelector<HTMLElement>('.la-detail-line')!;
     const rawValue = field.value.replace(/[₹,]/g, '').replace(/\/mo$/, '');
     valueRow.innerHTML = `
-      <input class="lc-sidebar-input" value="${rawValue}" />
-      <button class="lc-sidebar-save" aria-label="Save" type="button">${ICON.check}</button>
+      <input class="la-input" value="${rawValue}" />
+      <button class="la-detail-edit" aria-label="Save" type="button">${ICON.check}</button>
     `;
     const input = valueRow.querySelector<HTMLInputElement>('input')!;
     input.focus();
@@ -60,22 +63,31 @@ export class ProfilePanel {
     const save = async () => {
       const token = this.getSessionToken();
       if (!token) return;
-      const saveBtn = valueRow.querySelector<HTMLButtonElement>('.lc-sidebar-save')!;
+      const saveBtn = valueRow.querySelector<HTMLButtonElement>('.la-detail-edit')!;
       saveBtn.disabled = true;
-      const result = await this.api.editField(token, field.key, input.value);
+      const showError = (message: string) => {
+        let err = row.querySelector<HTMLElement>('.la-error');
+        if (!err) {
+          err = document.createElement('div');
+          err.className = 'la-error';
+          row.appendChild(err);
+        }
+        err.textContent = message;
+        saveBtn.disabled = false;
+      };
+      let result: Awaited<ReturnType<ChatApi['editField']>>;
+      try {
+        result = await this.api.editField(token, field.key, input.value);
+      } catch (e) {
+        showError(describeApiError(e, "Couldn't save that."));
+        return;
+      }
       if (result.ok) {
         const messages = [result.summaryMessage, result.eligibilityMessage].filter((m): m is string => Boolean(m));
         this.onResultUpdated(result.resultPayload, messages);
         await this.refresh();
       } else {
-        let err = row.querySelector<HTMLElement>('.lc-sidebar-error');
-        if (!err) {
-          err = document.createElement('div');
-          err.className = 'lc-sidebar-error';
-          row.appendChild(err);
-        }
-        err.textContent = result.error ?? "Couldn't save that.";
-        saveBtn.disabled = false;
+        showError(result.error ?? "Couldn't save that.");
       }
     };
     valueRow.querySelector<HTMLButtonElement>('.lc-sidebar-save')!.onclick = save;

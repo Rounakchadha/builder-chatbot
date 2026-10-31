@@ -1,4 +1,4 @@
-import type { ChatTurnResponse } from '@loan-chatbot/shared';
+import type { ChatTurnResponse } from '@builder-chatbot/shared';
 import type { FlowDefinition, StepContext, StepDefinition } from './types';
 
 /** Ports the prototype's applicablePath()/nextStepId() logic, generalized to any FlowDefinition. */

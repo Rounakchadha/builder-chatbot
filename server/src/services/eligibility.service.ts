@@ -1,4 +1,4 @@
-import type { LenderOffer, Segment } from '@loan-chatbot/shared';
+import type { LenderOffer, Segment } from '@builder-chatbot/shared';
 import { env } from '../config/env';
 import { computeEligibility, computeLenderEligibility, LENDERS } from '../flow-engine/eligibility';
 import { finfinityClient } from './finfinityClient';
@@ -19,6 +19,11 @@ export interface EligibilityInput {
    * docs only show it for the PL/EL/AL flow), but confirmed live (2026-09-23) that HL/LAP actually
    * needs it too: omitting it crashes getcustomeroffers with a Python KeyError, `'product_code'`. */
   productCode?: string;
+  /** "Self-occupied" / "Rented" / "Vacant" (LAP only) — mapped to this endpoint's own Title Case
+   * values (see RealEligibilityService). */
+  occupancy?: string;
+  /** True for a balance-transfer loan type — mapped to this endpoint's bt_type field. */
+  isBalanceTransfer?: boolean;
 }
 
 export interface EligibilityResult {
@@ -78,6 +83,14 @@ interface GetCustomerOffersHlResponse {
   error_code: string;
 }
 
+/** "Self-occupied" -> "Self Occupied", etc. — confirmed live (2026-10-16) that getcustomeroffers
+ * wants its OWN Title Case / spaced format for this, different from updatelead's lowercase/
+ * underscored "self_occupied". Two separate fields on two separate endpoints, two separate
+ * formats — not a typo, confirmed by testing both. */
+function toTitleCaseSpaced(value: string): string {
+  return value.replace(/[-_]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 /** Real BRE/lender-offers API — POST /leadflow/getcustomeroffers. For HL/LAP (the only products
  * this flow supports today) it's keyed by leadid, not by the raw income/segment/product this
  * interface was designed around — the backend pulls those straight from the lead it already has.
@@ -86,7 +99,20 @@ interface GetCustomerOffersHlResponse {
  *
  * income/emi ARE pushed onto the lead before this ever runs — see updateLead's monthly_income/
  * existing_emi in lead.service.ts and syncLeadFinancials in flows/homeLoan.ts, which both
- * computeResultPayload and recomputeEligibility call before getting here. */
+ * computeResultPayload and recomputeEligibility call before getting here.
+ *
+ * CRITICAL FIX (2026-10-16): this call was crashing for every LAP lead with `EXEC_ERR: "cannot
+ * unpack non-iterable NoneType object"` — confirmed live that it's NOT about collateral_type being
+ * missing/invalid on the lead (as first suspected and reported to Bitsflow). The real cause: this
+ * endpoint needs a much richer payload than just {leadid, product_code} — ownership/secure_loan/
+ * company_type/occupancy_type/property_type/builder_name/corporate_name/bt_type/campaign_code/
+ * filter/collateral_type ALL need to be in THIS request body directly (not just synced onto the
+ * lead beforehand via updatelead). Confirmed live: sending these (even with collateral_type as a
+ * blank string) returns a full, real 20-lender offer list with zero crash — reproduced on a fresh
+ * lead end-to-end. Most of these fields (ownership, secure_loan, company_type, builder_name,
+ * corporate_name) have no real collected-data source in this flow yet and are sent as fixed
+ * individual-applicant defaults; swap them for real values if/when this flow ever supports
+ * non-individual or company-owned-property applicants. */
 class RealEligibilityService implements EligibilityService {
   async evaluate(input: EligibilityInput): Promise<EligibilityResult> {
     if (!input.leadId) {
@@ -95,19 +121,42 @@ class RealEligibilityService implements EligibilityService {
 
     const results = await finfinityClient.post<GetCustomerOffersHlResponse[]>(
       '/leadflow/getcustomeroffers',
-      { leadid: Number(input.leadId), product_code: input.productCode },
+      {
+        leadid: Number(input.leadId),
+        product_code: input.productCode,
+        ownership: 'Individual',
+        secure_loan: 'No',
+        company_type: '',
+        occupancy_type: input.occupancy ? toTitleCaseSpaced(input.occupancy) : '',
+        // Construction status, not collected in this flow yet — "Ready to Move" is the common
+        // default and what both confirmed-working live examples used.
+        property_type: 'Ready to Move',
+        builder_name: '',
+        corporate_name: '',
+        bt_type: input.isBalanceTransfer ? 'BT' : '',
+        campaign_code: 'anacity',
+        filter: {},
+        collateral_type: '',
+      },
       { token: input.token },
     );
     const data = results[0]?.data?.[0];
     if (!data) throw new Error('getcustomeroffers returned no data');
 
-    const offers: LenderOffer[] = data.final_lender_list.map((l) => ({
-      name: l.lender_name,
-      amountLakh: l.eligibility_amount / 100000,
-      emi: l.emi,
-      rate: String(l.rate),
-      tenureYears: Math.round(l.max_tenure / 12),
-    }));
+    const offers: LenderOffer[] = data.final_lender_list
+      .map((l) => ({
+        name: l.lender_name,
+        amountLakh: l.eligibility_amount / 100000,
+        emi: l.emi,
+        rate: String(l.rate),
+        // Security-review finding, 2026-10-23: was Math.round, which can round UP — a real max
+        // tenure of e.g. 211 months became "18 years" (216 months), overstating what this lender
+        // actually offers. Math.floor never overstates it.
+        tenureYears: Math.floor(l.max_tenure / 12),
+      }))
+      // Security-review finding, 2026-10-23: this used to trust getcustomeroffers already returned
+      // lenders best-first and just took offers[0] — nothing actually guaranteed that ordering.
+      .sort((a, b) => b.amountLakh - a.amountLakh);
 
     if (offers.length === 0) {
       return { eligible: false, emi: 0, tenureYears: 0, loanAmountLakh: '0' };

@@ -1,4 +1,4 @@
-import { CHECK_ELIGIBILITY, CHECK_EXISTING_APPLICATION, COLLATERAL_TYPES, LOAN_TYPES, PRODUCT_OPTIONS, PROPERTY_TYPES, SEGMENTS, type EligibilityResultPayload } from '@loan-chatbot/shared';
+import { CHECK_ELIGIBILITY, CHECK_EXISTING_APPLICATION, COLLATERAL_TYPES, LOAN_TYPES, PRODUCT_OPTIONS, PROPERTY_TYPES, SEGMENTS, type EligibilityResultPayload } from '@builder-chatbot/shared';
 import type { Answers, FlowDefinition, StepContext } from '../flow-engine/types';
 import { encryptPii, hmacLookup, maskMobile, maskPan } from '../lib/crypto';
 import { escapeHtml } from '../lib/escapeHtml';
@@ -8,10 +8,13 @@ import { parseAmount } from '../lib/parseAmount';
 import { validateChoice } from '../lib/validateChoice';
 import { UserFacingError } from '../lib/userFacingError';
 import { prisma } from '../lib/prisma';
+import { Prisma } from '@prisma/client';
 import { bureauService } from '../services/bureau.service';
 import { customerService } from '../services/customer.service';
 import { dedupeService, type DuplicateMatch } from '../services/dedupe.service';
 import { eligibilityService } from '../services/eligibility.service';
+import { homeLoanEligibilityService, mapSegmentToHlEmploymentType, mapPropertyTypeToHl, HL_LENDER_DISPLAY_NAME, type HlEligibilityFacts, type HlLenderEligibility } from '../services/homeLoanEligibility.service';
+import { lenderNamesMatch } from './personalLoan';
 import { leadService, PRODUCT_CODE } from '../services/lead.service';
 import { panService } from '../services/pan.service';
 import { pincodeService } from '../services/pincode.service';
@@ -22,6 +25,49 @@ import { generateLeadId, pickRm } from './rm';
 
 function isEligibilityIntent(answers: Answers): boolean {
   return answers.intent === CHECK_ELIGIBILITY;
+}
+
+/** Everything from 'loanType' onward in this file only ever runs for Home loan/Loan against
+ * property — Personal/Gold/Business loan and Loan Against Securities branch off into their own
+ * short flows right after 'product' (see flows/index.ts) and never reach these steps. Before
+ * 'product' is actually answered, ctx.answers.product is still undefined, so these stay counted as
+ * applicable (matching the historical "assume Home loan until told otherwise" progress count) —
+ * they only drop out once a *different* product is actually chosen, which is what keeps the
+ * progress bar's total from being inflated by Home loan-only steps for those other products. */
+function isHomeLoanOrLap(answers: Answers): boolean {
+  return !answers.product || answers.product === 'Home loan' || answers.product === 'Loan against property';
+}
+
+/** PAN's 4th character is the Income Tax Department's own entity-type code — 'P' is an individual;
+ * every other code ('C' company, 'F' firm/LLP, 'H' HUF, 'A' association of persons, 'T' trust, 'G'
+ * government, 'B' body of individuals, 'L' local authority) is some kind of non-individual entity.
+ * Home Loan/LAP only have an individual-applicant journey built — there's no eligibility logic for
+ * an entity PAN yet, so these two products stop and say so rather than walking a non-individual
+ * applicant through the full income/property questionnaire for an answer we can never give them
+ * (2026-10-16 direct instruction — table confirmed the P/C/F/H/A/T code mapping). */
+function isIndividualPan(pan: string | undefined): boolean {
+  return !pan || pan.charAt(3).toUpperCase() === 'P';
+}
+
+// Security-review finding, 2026-10-23: there was no minimum-age check anywhere for Home Loan/LAP —
+// the real DOB (from the PAN lookup) was only ever used to DISPLAY an age on the profile summary,
+// never to gate anything. 18 is the standard contracting-age floor for a lending product in India.
+const MIN_APPLICANT_AGE_YEARS = 18;
+
+/** Business Loan isn't offered to a salaried customer at all (2026-10-17 instruction) — hidden
+ * from the 'product' choices outright rather than offered and rejected deeper into its own flow
+ * (businessLoan.ts's isSalariedSegment is the defensive backstop for that branch regardless).
+ * Personal Loan is the mirror image (2026-10-21 instruction) — its real lender eligibility rules
+ * (Poonawalla/Tata/Unity) only apply to salaried applicants, so it's hidden for Business owner/
+ * Self-employed professional the same way, with personalLoan.ts's isNonSalariedSegment as the
+ * same kind of defensive backstop. */
+function productOptionsFor(ctx: StepContext): string[] {
+  const segment = ctx.answers.segment;
+  return PRODUCT_OPTIONS.filter((option) => {
+    if (option === 'Business Loan' && segment === 'Salaried') return false;
+    if (option === 'Personal Loan' && segment && segment !== 'Salaried') return false;
+    return true;
+  });
 }
 
 /** Both intents need a verified identity before we act on their mobile number — eligibility needs
@@ -40,7 +86,14 @@ async function verifyOtpOrThrow(conversationId: string, code: string) {
   try {
     result = await smsService.verifyOtp(conversationId, code);
   } catch (err) {
-    throw new Error('Too many incorrect attempts. Please request a new OTP.');
+    // Security-review finding, 2026-10-23: every thrown error here used to become "Too many
+    // incorrect attempts" — including a genuine network/API error that had nothing to do with the
+    // customer's attempt count, telling them it was their fault when it wasn't. 'otp_locked' (thrown
+    // by sms.service.ts for the real lockout case) is the only one that message actually describes.
+    if (err instanceof Error && err.message === 'otp_locked') {
+      throw new Error('Too many incorrect attempts. Please request a new OTP.');
+    }
+    throw new Error('Something went wrong verifying your OTP. Please try again.');
   }
   if (!result.ok) throw new Error('Incorrect OTP. Please try again.');
   return result;
@@ -73,7 +126,7 @@ function propertyAlreadyIdentified(answers: Answers): boolean {
   return isBT(answers) || answers.loanType === 'Loan against property (LAP)';
 }
 
-function calcAge(dobIso: string): number {
+export function calcAge(dobIso: string): number {
   const dob = new Date(dobIso);
   const now = new Date();
   let age = now.getFullYear() - dob.getFullYear();
@@ -104,7 +157,15 @@ function renderFoundProfileSummary(ctx: StepContext): string {
   const lines: string[] = [];
   if (a.name) lines.push(`<strong>Name:</strong> ${escapeHtml(a.name as string)}`);
   if (a.pan) lines.push(`<strong>PAN:</strong> ${maskPan(a.pan as string)}`);
-  if (a.dob) lines.push(`<strong>DOB:</strong> ${formatDob(a.dob as string)} (age ${calcAge(a.dob as string)})`);
+  // A non-individual PAN's "dob" field is really its date of registration/incorporation — showing
+  // it as a birth date + age would be nonsensical for an entity (2026-10-17 instruction).
+  if (a.dob) {
+    lines.push(
+      isIndividualPan(a.pan as string | undefined)
+        ? `<strong>DOB:</strong> ${formatDob(a.dob as string)} (age ${calcAge(a.dob as string)})`
+        : `<strong>Date of incorporation:</strong> ${formatDob(a.dob as string)}`,
+    );
+  }
   if (a.email) lines.push(`<strong>Email:</strong> ${escapeHtml(a.email as string)}`);
   if (a.pincode) lines.push(`<strong>Pincode:</strong> ${a.pincode}`);
   if (a.segment) lines.push(`<strong>Employment:</strong> ${a.segment}`);
@@ -158,6 +219,12 @@ function suggestedEmailDomain(domain: string): string | null {
 // rejects obvious typos/joke values like "6" so eligibility math never runs on nonsense input.
 const MIN_SANE_INCOME = 5_000;
 const MIN_PROPERTY_VALUE = 500_000; // ₹5 lakh floor — same "sanity, not a business rule" reasoning as MIN_SANE_INCOME
+// Security-review finding, 2026-10-23: there was no upper bound at all on income/EMI/loan amount —
+// a mistyped or abusive value (an extra zero, a copy-paste accident) sailed straight through to
+// real Finfinity calls. Same "sanity floor, not a business rule" spirit as MIN_SANE_INCOME above,
+// just on the other end — generous enough that no real applicant should ever hit it.
+const MAX_SANE_MONTHLY_AMOUNT = 1_00_00_000; // ₹1 crore/month — covers income and EMI
+const MAX_SANE_PROPERTY_VALUE = 500_00_00_000; // ₹500 crore
 
 const SEGMENT_HINTS: SemanticHint[] = [
   { pattern: /\b(shop|store|trading|vendor|own(er)? of a|my business|entrepreneur)\b/i, option: 'Business owner' },
@@ -194,6 +261,76 @@ function buildProfileSummary(ctx: StepContext): string {
   return `Here's what I've got so far:<br>${lines.join('<br>')}<br><br>Let me check your eligibility across lenders now.`;
 }
 
+// Not collected anywhere in this flow (the real getcustomeroffers call needs none of these either
+// — see RealEligibilityService's own comment on how it's keyed purely by leadid) — same "fixed
+// stand-in, not a real collected value" spirit as personalLoan.ts's PL_PRECHECK_TENURE_MONTHS.
+// Requested amount is set to 80% of the property value (a customer applying for a purchase loan
+// typically wants close to the max LTV-serviceable amount) purely to pick the right LTV slab in
+// our own pre-check's flat LTV table — it never gates eligibility there either way (see that
+// project's "never reject on requested amount" standing rule).
+const HL_PRECHECK_TENURE_MONTHS = 240;
+
+function buildHlPrecheckFacts(ctx: StepContext): HlEligibilityFacts {
+  const a = ctx.answers;
+  const propertyValue = Number(a.propertyValue) || 0;
+  return {
+    cibilScore: Number(a.creditScore) || 0,
+    monthlyIncome: Number(a.income) || 0,
+    employmentType: mapSegmentToHlEmploymentType(a.segment as string | undefined),
+    age: a.dob ? calcAge(a.dob as string) : 0,
+    pincode: (a.pincode as string) ?? '',
+    propertyValue,
+    loanAmountRequested: Math.round(propertyValue * 0.8),
+    tenureMonths: HL_PRECHECK_TENURE_MONTHS,
+    propertyType: mapPropertyTypeToHl(a.propertyType as string | undefined),
+    existingMonthlyEmi: Number(a.emi) || 0,
+  };
+}
+
+/** Fired-and-forgotten (never awaited by the customer-facing path) right after the real
+ * getcustomeroffers call computes offers — runs our own standalone Home Loan BRE
+ * (homeLoanEligibility.service.ts) on the same facts purely for comparison, and persists both so
+ * they can be reviewed later to calibrate/improve our own BRE. Same discipline as
+ * personalLoan.ts's runOwnBreComparison for Personal Loan — never shown to the customer, never
+ * affects what they see or which offers they can pick.
+ *
+ * `realChainResults` here is only the ELIGIBLE side — see HlBreComparison's own schema comment for
+ * why getcustomeroffers's rejected_lender_list isn't available at this layer today. */
+async function runOwnHlBreComparison(ctx: StepContext, leadId: string | undefined, realOffers: EligibilityResultPayload['offers']): Promise<void> {
+  try {
+    const facts = buildHlPrecheckFacts(ctx);
+    const ownBreResults: HlLenderEligibility[] = await homeLoanEligibilityService.checkAll(facts);
+    await prisma.hlBreComparison.create({
+      data: {
+        conversationId: ctx.conversationId,
+        leadId,
+        facts: facts as unknown as Prisma.InputJsonValue,
+        realChainResults: (realOffers ?? []) as unknown as Prisma.InputJsonValue,
+        ownBreResults: ownBreResults as unknown as Prisma.InputJsonValue,
+      },
+    });
+    const realEligible = realOffers ?? [];
+    const ownEligible = ownBreResults.filter((r) => r.eligible);
+    const matched = ownEligible.filter((own) => realEligible.some((real) => lenderNamesMatch(real.name, HL_LENDER_DISPLAY_NAME[own.lender])));
+    logger.info(
+      {
+        event: 'hl_bre_comparison',
+        conversationId: ctx.conversationId,
+        leadId,
+        realChainLenderCount: realEligible.length,
+        ownBreLenderCount: ownEligible.length,
+        ownBreFoundMoreLenders: ownEligible.length > realEligible.length,
+        matchedLenderCount: matched.length,
+      },
+      'home loan BRE comparison saved',
+    );
+  } catch (err) {
+    // Purely a comparison/calibration run — a failure here must never affect the customer-facing
+    // flow, which has already returned its response by the time this runs.
+    logger.error({ err, conversationId: ctx.conversationId }, 'hl BRE comparison run failed — continuing without it');
+  }
+}
+
 /** Pure eligibility math — safe to call repeatedly (e.g. after the customer edits their income
  * from the profile panel) since it has no side effects. Reuses rm/leadId from `previous` when
  * given, so an edit-triggered recompute doesn't reassign the RM or mint a second lead ID.
@@ -219,16 +356,29 @@ async function computeEligibilityPayload(
   const seedKey = pan || (a.mobile as string) || ctx.conversationId;
   // Placeholder math (see services/eligibility.service.ts) — replaced by the real BRE's numbers
   // once FINFINITY_OFFERS_ENABLED is on; nothing else here depends on which one actually ran.
-  const outcome = await eligibilityService.evaluate({
-    segment: segment as any,
-    product,
-    income,
-    emi,
-    seedKey,
-    leadId: builderLeadId,
-    token: a.finfinityAccessToken as string | undefined,
-    productCode: PRODUCT_CODE[product],
-  });
+  let outcome: Awaited<ReturnType<typeof eligibilityService.evaluate>>;
+  try {
+    outcome = await eligibilityService.evaluate({
+      segment: segment as any,
+      product,
+      income,
+      emi,
+      seedKey,
+      leadId: builderLeadId,
+      token: a.finfinityAccessToken as string | undefined,
+      productCode: PRODUCT_CODE[product],
+      occupancy: a.occupancy as string | undefined,
+      isBalanceTransfer: isBT(a),
+    });
+  } catch (err) {
+    // Security-review finding, 2026-10-23: RealEligibilityService throws on a genuine
+    // getcustomeroffers failure (missing leadId, no data back, a network error) — left unhandled,
+    // that used to bubble all the way up into computeResultPayload's caller as a generic crash, not
+    // an honest result. Real failure here means no real offers exist to show, so say that plainly
+    // (eligible: false, no offers) instead of either crashing or inventing a fallback number.
+    logger.error({ err, conversationId: ctx.conversationId }, 'eligibility/offers check failed — showing no offers instead of a fabricated or hard error');
+    outcome = { eligible: false, emi: 0, tenureYears: 0, loanAmountLakh: '0' };
+  }
 
   // Financial eligibility (pure income/FOIR, ignoring the property entirely) is always the best
   // offer's amount. If a property value is known, it's also capped by an assumed LTV % of that
@@ -280,34 +430,65 @@ async function ensureLead(
   info: { pan: string; name?: string; creditScore?: number; product: string; loanType: string },
   opts?: { syncFullProfile?: boolean },
 ): Promise<{ builderLeadId: string | null; rm?: { name: string; phone: string; email: string } }> {
-  const result = await leadService.createLead({
-    conversationId: ctx.conversationId,
-    panMasked: maskPan(info.pan),
-    name: info.name,
-    mobileMasked: ctx.answers.mobile ? maskMobile(ctx.answers.mobile as string) : undefined,
-    creditScore: info.creditScore as number,
-    product: info.product,
-    loanType: info.loanType,
-    remoteCustomerId: ctx.answers.remoteCustomerId as number | undefined,
-    token: ctx.answers.finfinityAccessToken as string | undefined,
-  });
-  await prisma.lead.create({
-    data: {
-      conversationId: ctx.conversationId,
-      panEncrypted: encryptPii(info.pan),
-      panMasked: maskPan(info.pan),
-      nameEncrypted: info.name ? encryptPii(info.name) : null,
-      creditScore: info.creditScore ?? null,
-      builderLeadId: result.builderLeadId,
-      builderSyncStatus: result.status,
-    },
-  });
+  // Idempotency fix (security-review finding, 2026-10-23): this used to call the real
+  // create_anacity_lead API unconditionally every time it ran, with no check for "didn't this
+  // conversation already get a lead?" — a double-click, a retried request after a network blip, or
+  // "Try again" after an earlier failure all created a SECOND real lead with Finfinity, and the
+  // local prisma.lead.create() right after it would then throw on Lead.conversationId's unique
+  // constraint (since the FIRST successful run had already inserted one), leaving the conversation
+  // permanently stuck erroring on every future attempt. Checked first now, with a catch below for
+  // the remaining race (two requests reaching here at the exact same instant) rather than relying
+  // on the check alone, which a true race could still slip past.
+  const existing = await prisma.lead.findUnique({ where: { conversationId: ctx.conversationId } });
+  let builderLeadId = existing?.builderLeadId ?? null;
+  let rm: { name: string; phone: string; email: string } | undefined;
 
-  if (opts?.syncFullProfile && result.builderLeadId) {
-    await syncLeadFinancials(ctx, result.builderLeadId, info.pan, info.loanType);
+  if (!existing) {
+    const result = await leadService.createLead({
+      conversationId: ctx.conversationId,
+      panMasked: maskPan(info.pan),
+      name: info.name,
+      mobileMasked: ctx.answers.mobile ? maskMobile(ctx.answers.mobile as string) : undefined,
+      creditScore: info.creditScore as number,
+      product: info.product,
+      loanType: info.loanType,
+      remoteCustomerId: ctx.answers.remoteCustomerId as number | undefined,
+      token: ctx.answers.finfinityAccessToken as string | undefined,
+    });
+    builderLeadId = result.builderLeadId;
+    rm = result.rm;
+    try {
+      await prisma.lead.create({
+        data: {
+          conversationId: ctx.conversationId,
+          panEncrypted: encryptPii(info.pan),
+          panMasked: maskPan(info.pan),
+          nameEncrypted: info.name ? encryptPii(info.name) : null,
+          creditScore: info.creditScore ?? null,
+          builderLeadId: result.builderLeadId,
+          builderSyncStatus: result.status,
+        },
+      });
+    } catch (err) {
+      // P2002 = unique constraint violation — a genuinely concurrent second request won this same
+      // race and already inserted the row a moment ago. The real lead this branch just created with
+      // Finfinity is now an orphan duplicate on their side (unavoidable once two real API calls were
+      // already in flight), but at least our own local state recovers instead of crashing: fall back
+      // to whichever row actually won.
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+        const winner = await prisma.lead.findUnique({ where: { conversationId: ctx.conversationId } });
+        builderLeadId = winner?.builderLeadId ?? builderLeadId;
+      } else {
+        throw err;
+      }
+    }
   }
 
-  return { builderLeadId: result.builderLeadId, rm: result.rm };
+  if (opts?.syncFullProfile && builderLeadId) {
+    await syncLeadFinancials(ctx, builderLeadId, info.pan, info.loanType);
+  }
+
+  return { builderLeadId, rm };
 }
 
 /** Pushes the customer's current profile + loan financials onto an already-created real lead —
@@ -381,6 +562,42 @@ export async function computeResultPayload(ctx: StepContext): Promise<Eligibilit
   const a = ctx.answers;
   const pan = a.pan as string | undefined;
 
+  // Home Loan/LAP, non-individual PAN — every intermediate step (loanType/income/property/...)
+  // already skipped itself for this case (see isIndividualPan), so none of that data exists to
+  // compute anything from. No lead, no eligibility call — just the "not supported yet" message.
+  if (isHomeLoanOrLap(a) && !isIndividualPan(pan)) {
+    const seedKey = pan || (a.mobile as string) || ctx.conversationId;
+    return {
+      eligible: false,
+      entityNotSupported: true,
+      name: a.name as string | undefined,
+      product: a.product as string,
+      loanType: (a.loanType as string) ?? '',
+      segment: a.segment as EligibilityResultPayload['segment'],
+      creditScore: a.creditScore as number | undefined,
+      rm: pickRm(seedKey),
+      leadCreated: false,
+    };
+  }
+
+  // Security-review finding, 2026-10-23: no age gate existed at all — see MIN_APPLICANT_AGE_YEARS's
+  // own comment above. Checked here, before ensureLead below ever creates a real lead, so an
+  // underage applicant's PAN never reaches Finfinity as a loan applicant in the first place.
+  if (isHomeLoanOrLap(a) && isIndividualPan(pan) && a.dob && calcAge(a.dob as string) < MIN_APPLICANT_AGE_YEARS) {
+    const seedKey = pan || (a.mobile as string) || ctx.conversationId;
+    return {
+      eligible: false,
+      underageNotSupported: true,
+      name: a.name as string | undefined,
+      product: a.product as string,
+      loanType: (a.loanType as string) ?? '',
+      segment: a.segment as EligibilityResultPayload['segment'],
+      creditScore: a.creditScore as number | undefined,
+      rm: pickRm(seedKey),
+      leadCreated: false,
+    };
+  }
+
   let builderLeadId: string | undefined;
   let realRm: { name: string; phone: string; email: string } | undefined;
   if (pan) {
@@ -403,6 +620,10 @@ export async function computeResultPayload(ctx: StepContext): Promise<Eligibilit
   if (pan) base.leadCreated = true;
 
   await prisma.conversation.update({ where: { id: ctx.conversationId }, data: { status: 'completed' } });
+
+  // Never awaited — see runOwnHlBreComparison's own doc comment. Must not delay or ever throw into
+  // this response, which has already been computed above.
+  void runOwnHlBreComparison(ctx, builderLeadId, base.offers);
 
   return base;
 }
@@ -557,7 +778,11 @@ export const homeLoanFlow: FlowDefinition = {
         try {
           result = await smsService.verifyOtp(ctx.conversationId, parsed as string);
         } catch (err) {
-          throw new Error('Too many incorrect attempts. Please request a new OTP.');
+          // See verifyOtpOrThrow's own comment above — same fix, same reasoning.
+          if (err instanceof Error && err.message === 'otp_locked') {
+            throw new Error('Too many incorrect attempts. Please request a new OTP.');
+          }
+          throw new Error('Something went wrong verifying your OTP. Please try again.');
         }
         if (!result.ok) throw new Error('Incorrect OTP. Please try again.');
         // This IS the login step — there's no separate credential to configure. The access token
@@ -753,10 +978,13 @@ export const homeLoanFlow: FlowDefinition = {
       type: 'choice',
       progressLabel: 'About you',
       isApplicable: (ctx) => ctx.answers.dedupeFound === false && Boolean(ctx.answers.duplicatePending) && ctx.answers.duplicateField === 'PAN',
-      botMessage: (ctx) => {
-        const match = ctx.answers.duplicateMatch as DuplicateMatch;
-        return `That PAN is already linked to an existing account — mobile number ending in ${match.mobileMasked}. Would you like to verify with that number instead, or enter a different PAN?`;
-      },
+      // Security-review finding, 2026-10-23: this used to show the matched account's masked mobile
+      // (8 of its 10 digits visible) right here — meaning anyone could type in a stranger's real PAN
+      // and both (a) learn they're an existing customer and (b) see almost their entire real phone
+      // number, all without ever proving they own either. The verify-OTP step right after this still
+      // sends the real OTP to that number (the genuine re-verification mechanism) — it's just never
+      // shown to the person who typed the PAN in.
+      botMessage: () => `That PAN is already linked to an existing account. Would you like to verify with that account's number instead, or enter a different PAN?`,
       input: () => ({ type: 'choice', options: ['Verify with that number', 'Enter a different PAN'], layout: 'column' }),
       validate: (value, ctx) =>
         validateChoice(ctx, 'panDuplicateChoice', ['Verify with that number', 'Enter a different PAN'], value, 'Would you like to verify with that number, or enter a different PAN?'),
@@ -782,7 +1010,12 @@ export const homeLoanFlow: FlowDefinition = {
       type: 'otp',
       progressLabel: 'Verifying identity',
       isApplicable: (ctx) => ctx.answers.duplicateField === 'PAN' && ctx.answers.panDuplicateChoice === 'Verify with that number',
-      botMessage: (ctx) => `We've sent a 6-digit OTP to +91 ${maskMobile(ctx.answers.mobile as string)} — entering it verifies it's your account.`,
+      // Security-review finding, 2026-10-23: ctx.answers.mobile here is the OTHER customer's real
+      // number (set by triggerOtpPanDuplicateVerify right above) — showing its masked form still
+      // revealed 8 of its 10 real digits to whoever typed in this PAN, the same leak as
+      // panDuplicateChoice's own message just one step later. The OTP still goes to that real
+      // number; this just stops echoing it back to the person who hasn't proven they own it.
+      botMessage: () => `We've sent a 6-digit OTP to that account's registered mobile number — entering it verifies it's your account.`,
       hint: () => 'Confirms the number is yours.',
       input: () => ({ type: 'otp', length: 6 }),
       validate: (value) => {
@@ -908,10 +1141,9 @@ export const homeLoanFlow: FlowDefinition = {
       type: 'choice',
       progressLabel: 'About you',
       isApplicable: (ctx) => ctx.answers.dedupeFound === false && Boolean(ctx.answers.duplicatePending) && ctx.answers.duplicateField === 'email',
-      botMessage: (ctx) => {
-        const match = ctx.answers.duplicateMatch as DuplicateMatch;
-        return `That email is already linked to an existing account — mobile number ending in ${match.mobileMasked}. Would you like to verify with that number instead, or enter a different email?`;
-      },
+      // See panDuplicateChoice's own comment above — same leak, same fix: don't show the matched
+      // account's mobile number to whoever typed in this email.
+      botMessage: () => `That email is already linked to an existing account. Would you like to verify with that account's number instead, or enter a different email?`,
       input: () => ({ type: 'choice', options: ['Verify with that number', 'Enter a different email'], layout: 'column' }),
       validate: (value, ctx) =>
         validateChoice(ctx, 'emailDuplicateChoice', ['Verify with that number', 'Enter a different email'], value, 'Would you like to verify with that number, or enter a different email?'),
@@ -935,7 +1167,8 @@ export const homeLoanFlow: FlowDefinition = {
       type: 'otp',
       progressLabel: 'Verifying identity',
       isApplicable: (ctx) => ctx.answers.duplicateField === 'email' && ctx.answers.emailDuplicateChoice === 'Verify with that number',
-      botMessage: (ctx) => `We've sent a 6-digit OTP to +91 ${maskMobile(ctx.answers.mobile as string)} — entering it verifies it's your account.`,
+      // See otpPanDuplicateVerify's own comment above — same leak, same fix.
+      botMessage: () => `We've sent a 6-digit OTP to that account's registered mobile number — entering it verifies it's your account.`,
       hint: () => 'Confirms the number is yours.',
       input: () => ({ type: 'otp', length: 6 }),
       validate: (value) => {
@@ -1074,7 +1307,7 @@ export const homeLoanFlow: FlowDefinition = {
       id: 'triggerOtpBureauFound',
       type: 'apiFetch',
       progressLabel: 'Verifying identity',
-      isApplicable: (ctx) => ctx.answers.dedupeFound === true && !ctx.answers.creditScore,
+      isApplicable: (ctx) => ctx.answers.dedupeFound === true && !ctx.answers.creditScore && isIndividualPan(ctx.answers.pan as string | undefined),
       botMessage: () => null,
       input: () => ({ type: 'none' }),
       onAnswer: async (_parsed, ctx) => {
@@ -1085,7 +1318,7 @@ export const homeLoanFlow: FlowDefinition = {
       id: 'otpBureauFound',
       type: 'otp',
       progressLabel: 'Verifying identity',
-      isApplicable: (ctx) => ctx.answers.dedupeFound === true && !ctx.answers.creditScore,
+      isApplicable: (ctx) => ctx.answers.dedupeFound === true && !ctx.answers.creditScore && isIndividualPan(ctx.answers.pan as string | undefined),
       botMessage: (ctx) => `We've sent a 6-digit code to +91 ${maskMobile(ctx.answers.mobile as string)} — entering it gives us your consent to pull your credit bureau report.`,
       hint: () => 'Confirms the number is yours and gives bureau consent.',
       input: () => ({ type: 'otp', length: 6 }),
@@ -1099,7 +1332,11 @@ export const homeLoanFlow: FlowDefinition = {
         try {
           result = await smsService.verifyOtp(ctx.conversationId, parsed as string);
         } catch (err) {
-          throw new Error('Too many incorrect attempts. Please request a new OTP.');
+          // See verifyOtpOrThrow's own comment above — same fix, same reasoning.
+          if (err instanceof Error && err.message === 'otp_locked') {
+            throw new Error('Too many incorrect attempts. Please request a new OTP.');
+          }
+          throw new Error('Something went wrong verifying your OTP. Please try again.');
         }
         if (!result.ok) throw new Error('Incorrect OTP. Please try again.');
         // Placeholder: the real bureau consent step returns its own fresh token pair (see
@@ -1116,7 +1353,7 @@ export const homeLoanFlow: FlowDefinition = {
       id: 'bureauFetchFound',
       type: 'apiFetch',
       progressLabel: 'Checking credit profile',
-      isApplicable: (ctx) => ctx.answers.dedupeFound === true && !ctx.answers.creditScore,
+      isApplicable: (ctx) => ctx.answers.dedupeFound === true && !ctx.answers.creditScore && isIndividualPan(ctx.answers.pan as string | undefined),
       botMessage: (ctx) => `Your CIBIL score is <strong>${ctx.answers.creditScore}</strong>.`,
       input: () => ({ type: 'none' }),
       onAnswer: async (_parsed, ctx) => {
@@ -1143,7 +1380,7 @@ export const homeLoanFlow: FlowDefinition = {
       id: 'triggerOtpBureauNotFound',
       type: 'apiFetch',
       progressLabel: 'Verifying identity',
-      isApplicable: (ctx) => ctx.answers.dedupeFound === false,
+      isApplicable: (ctx) => ctx.answers.dedupeFound === false && isIndividualPan(ctx.answers.pan as string | undefined),
       botMessage: () => null,
       input: () => ({ type: 'none' }),
       onAnswer: async (_parsed, ctx) => {
@@ -1154,7 +1391,7 @@ export const homeLoanFlow: FlowDefinition = {
       id: 'otpBureauNotFound',
       type: 'otp',
       progressLabel: 'Verifying identity',
-      isApplicable: (ctx) => ctx.answers.dedupeFound === false,
+      isApplicable: (ctx) => ctx.answers.dedupeFound === false && isIndividualPan(ctx.answers.pan as string | undefined),
       botMessage: (ctx) => `We've sent a 6-digit code to +91 ${maskMobile(ctx.answers.mobile as string)} — entering it gives us your consent to pull your credit bureau report.`,
       hint: () => 'Confirms the number is yours and gives bureau consent.',
       input: () => ({ type: 'otp', length: 6 }),
@@ -1168,7 +1405,11 @@ export const homeLoanFlow: FlowDefinition = {
         try {
           result = await smsService.verifyOtp(ctx.conversationId, parsed as string);
         } catch (err) {
-          throw new Error('Too many incorrect attempts. Please request a new OTP.');
+          // See verifyOtpOrThrow's own comment above — same fix, same reasoning.
+          if (err instanceof Error && err.message === 'otp_locked') {
+            throw new Error('Too many incorrect attempts. Please request a new OTP.');
+          }
+          throw new Error('Something went wrong verifying your OTP. Please try again.');
         }
         if (!result.ok) throw new Error('Incorrect OTP. Please try again.');
         // Placeholder — see the equivalent comment on otpBureauFound above.
@@ -1182,32 +1423,47 @@ export const homeLoanFlow: FlowDefinition = {
       id: 'bureauFetchNotFound',
       type: 'apiFetch',
       progressLabel: 'Checking credit profile',
+      // Deliberately NOT gated on isIndividualPan — this step also promotes the masked name to the
+      // real one (see onAnswer), which still has to happen for a non-individual PAN even though the
+      // bureau pull itself is skipped for them. Only the API call inside onAnswer is conditional.
       isApplicable: (ctx) => ctx.answers.dedupeFound === false,
       botMessage: (ctx) => {
         const a = ctx.answers;
         const displayName = (a.fullName as string | undefined) ?? (a.name as string);
         const lines = [`<strong>Name:</strong> ${escapeHtml(displayName)}`];
-        if (a.dob) lines.push(`<strong>DOB:</strong> ${formatDob(a.dob as string)} (age ${calcAge(a.dob as string)})`);
+        if (a.dob) {
+          lines.push(
+            isIndividualPan(a.pan as string | undefined)
+              ? `<strong>DOB:</strong> ${formatDob(a.dob as string)} (age ${calcAge(a.dob as string)})`
+              : `<strong>Date of incorporation:</strong> ${formatDob(a.dob as string)}`,
+          );
+        }
         if (a.pincode) lines.push(`<strong>Pincode:</strong> ${a.pincode}`);
-        lines.push(`<strong>CIBIL score:</strong> ${a.creditScore}`);
+        if (a.creditScore) lines.push(`<strong>CIBIL score:</strong> ${a.creditScore}`);
         return `Here's what we have:<br>${lines.join('<br>')}`;
       },
       input: () => ({ type: 'none' }),
       onAnswer: async (_parsed, ctx) => {
-        const pull = await bureauService.pull(ctx.answers.pan as string, {
-          dob: ctx.answers.dob as string | undefined,
-          pincode: ctx.answers.pincode as string | undefined,
-          email: ctx.answers.email as string | undefined,
-        });
+        // "No Bureau API to be hit where 4th letter in PAN is NOT P" (2026-10-17 instruction) — the
+        // OTP consent steps right before this are already skipped for a non-individual PAN (see
+        // triggerOtpBureauNotFound/otpBureauNotFound), so there's no consent to act on here either;
+        // skip the real pull entirely rather than calling it anyway with no OTP ever having run.
+        const isIndividual = isIndividualPan(ctx.answers.pan as string | undefined);
+        const pull = isIndividual
+          ? await bureauService.pull(ctx.answers.pan as string, {
+              dob: ctx.answers.dob as string | undefined,
+              pincode: ctx.answers.pincode as string | undefined,
+              email: ctx.answers.email as string | undefined,
+            })
+          : undefined;
         // Replaces the masked name panFetch showed with the real one, now that both OTPs
         // (identity, then bureau consent) are cleared — same bar the dedupe-found branch clears
         // with just its one OTP before ever storing the real name. Updating the actual answers.name
         // value (not just a display-time swap in botMessage above) means everything that reads it
         // downstream — the profile sidebar, the result card — picks up the real name too, not just
-        // this one chat bubble.
+        // this one chat bubble. Still happens even when the bureau pull itself was skipped.
         return {
-          creditScore: pull.creditScore,
-          bureauSource: pull.source,
+          ...(pull ? { creditScore: pull.creditScore, bureauSource: pull.source } : {}),
           ...(ctx.answers.fullName ? { name: ctx.answers.fullName } : {}),
         };
       },
@@ -1245,18 +1501,20 @@ export const homeLoanFlow: FlowDefinition = {
       progressLabel: 'Choosing a product',
       isApplicable: (ctx) => isEligibilityIntent(ctx.answers),
       botMessage: () => 'What are you looking for?',
-      input: () => ({ type: 'choice', options: [...PRODUCT_OPTIONS], layout: 'column' }),
+      // Business Loan doesn't work for a salaried customer at all (2026-10-17 instruction) — hidden
+      // from the options entirely rather than offered and then rejected deeper into its own flow.
+      input: (ctx) => ({ type: 'choice', options: productOptionsFor(ctx), layout: 'column' }),
       // Personal loan/Gold loan/Business loan branch into their own short flows right after this
       // step (see flows/index.ts, which splices flows/personalLoan.ts etc. in here) — everything
       // below in this file (loanType onward) only ever runs for Home loan/Loan against property,
       // same as before this step gained the three extra options.
-      validate: (value, ctx) => validateChoice(ctx, 'product', [...PRODUCT_OPTIONS], value, `Which of these is it: ${PRODUCT_OPTIONS.join(', ')}?`),
+      validate: (value, ctx) => validateChoice(ctx, 'product', productOptionsFor(ctx), value, `Which of these is it: ${productOptionsFor(ctx).join(', ')}?`),
     },
     {
       id: 'loanType',
       type: 'choice',
       progressLabel: 'Choosing a product',
-      isApplicable: (ctx) => isEligibilityIntent(ctx.answers),
+      isApplicable: (ctx) => isEligibilityIntent(ctx.answers) && isHomeLoanOrLap(ctx.answers) && isIndividualPan(ctx.answers.pan as string | undefined),
       botMessage: (ctx) => {
         const options = LOAN_TYPES[ctx.answers.product as string] ?? [];
         return `Got it — <strong>${ctx.answers.product}</strong>. What type of loan is this: ${options.join(' or ')}?`;
@@ -1275,7 +1533,7 @@ export const homeLoanFlow: FlowDefinition = {
       id: 'income',
       type: 'number',
       progressLabel: 'Financial details',
-      isApplicable: (ctx) => isEligibilityIntent(ctx.answers),
+      isApplicable: (ctx) => isEligibilityIntent(ctx.answers) && isHomeLoanOrLap(ctx.answers) && isIndividualPan(ctx.answers.pan as string | undefined),
       botMessage: () => "What's your monthly income?",
       hint: () => 'Net take-home, or average monthly income if self-employed.',
       input: () => ({ type: 'number', placeholder: 'e.g. 85000, or 1.2 lakh' }),
@@ -1284,6 +1542,9 @@ export const homeLoanFlow: FlowDefinition = {
         if (!v || v < MIN_SANE_INCOME) {
           return { ok: false, error: `Enter your actual monthly income — e.g. 85000. It should be at least ₹${MIN_SANE_INCOME.toLocaleString('en-IN')}.` };
         }
+        if (v > MAX_SANE_MONTHLY_AMOUNT) {
+          return { ok: false, error: `That doesn't look right — enter your actual monthly income (up to ₹${MAX_SANE_MONTHLY_AMOUNT.toLocaleString('en-IN')}).` };
+        }
         return { ok: true, parsed: v };
       },
     },
@@ -1291,7 +1552,7 @@ export const homeLoanFlow: FlowDefinition = {
       id: 'emi',
       type: 'number',
       progressLabel: 'Financial details',
-      isApplicable: (ctx) => isEligibilityIntent(ctx.answers),
+      isApplicable: (ctx) => isEligibilityIntent(ctx.answers) && isHomeLoanOrLap(ctx.answers) && isIndividualPan(ctx.answers.pan as string | undefined),
       botMessage: () => 'Do you currently have any other loan EMIs?',
       hint: (ctx) => (isBT(ctx.answers) ? "Don't include the loan you're transferring." : 'Say "no" if you don\'t have any.'),
       input: () => ({ type: 'number', placeholder: "e.g. 12000, or 'no'" }),
@@ -1307,7 +1568,7 @@ export const homeLoanFlow: FlowDefinition = {
       id: 'propertyGate',
       type: 'choice',
       progressLabel: 'Property details',
-      isApplicable: (ctx) => isEligibilityIntent(ctx.answers) && !propertyAlreadyIdentified(ctx.answers),
+      isApplicable: (ctx) => isEligibilityIntent(ctx.answers) && isHomeLoanOrLap(ctx.answers) && isIndividualPan(ctx.answers.pan as string | undefined) && !propertyAlreadyIdentified(ctx.answers),
       botMessage: () => "Have you already identified the property you're planning to buy, or not yet?",
       input: () => ({ type: 'choice', options: ['Yes', 'Not yet'], layout: 'row' }),
       validate: (value, ctx) => {
@@ -1320,7 +1581,7 @@ export const homeLoanFlow: FlowDefinition = {
       id: 'propertyType',
       type: 'choice',
       progressLabel: 'Property details',
-      isApplicable: (ctx) => isEligibilityIntent(ctx.answers) && (propertyAlreadyIdentified(ctx.answers) || ctx.answers.propertyGate === 'Yes'),
+      isApplicable: (ctx) => isEligibilityIntent(ctx.answers) && isHomeLoanOrLap(ctx.answers) && isIndividualPan(ctx.answers.pan as string | undefined) && (propertyAlreadyIdentified(ctx.answers) || ctx.answers.propertyGate === 'Yes'),
       botMessage: (ctx) => {
         const options = PROPERTY_TYPES[ctx.answers.product as string] ?? [];
         return `What type of property is it — ${options.join(', ')}?`;
@@ -1336,7 +1597,7 @@ export const homeLoanFlow: FlowDefinition = {
       id: 'propertyValue',
       type: 'number',
       progressLabel: 'Property details',
-      isApplicable: (ctx) => isEligibilityIntent(ctx.answers) && (propertyAlreadyIdentified(ctx.answers) || ctx.answers.propertyGate === 'Yes'),
+      isApplicable: (ctx) => isEligibilityIntent(ctx.answers) && isHomeLoanOrLap(ctx.answers) && isIndividualPan(ctx.answers.pan as string | undefined) && (propertyAlreadyIdentified(ctx.answers) || ctx.answers.propertyGate === 'Yes'),
       botMessage: () => "What's the property worth (its market/agreement value)?",
       hint: () => `At least ₹${(MIN_PROPERTY_VALUE / 100000).toFixed(0)} lakh.`,
       input: () => ({ type: 'number', placeholder: 'e.g. 75 lakh' }),
@@ -1344,6 +1605,9 @@ export const homeLoanFlow: FlowDefinition = {
         const v = parseAmount(value);
         if (!v || v < MIN_PROPERTY_VALUE) {
           return { ok: false, error: `Enter the property's value — it should be at least ₹${(MIN_PROPERTY_VALUE / 100000).toFixed(0)} lakh.` };
+        }
+        if (v > MAX_SANE_PROPERTY_VALUE) {
+          return { ok: false, error: `That doesn't look right — enter the property's real value (up to ₹${(MAX_SANE_PROPERTY_VALUE / 10000000).toFixed(0)} crore).` };
         }
         return { ok: true, parsed: v };
       },
@@ -1380,7 +1644,7 @@ export const homeLoanFlow: FlowDefinition = {
       id: 'profileSummary',
       type: 'message',
       progressLabel: 'Your eligibility',
-      isApplicable: (ctx) => isEligibilityIntent(ctx.answers),
+      isApplicable: (ctx) => isEligibilityIntent(ctx.answers) && isHomeLoanOrLap(ctx.answers) && isIndividualPan(ctx.answers.pan as string | undefined),
       botMessage: (ctx) => buildProfileSummary(ctx),
       input: () => ({ type: 'none' }),
       onAnswer: async (_parsed, ctx) => {
@@ -1398,8 +1662,16 @@ export const homeLoanFlow: FlowDefinition = {
       id: 'result',
       type: 'result',
       progressLabel: 'Your eligibility',
+      // Also serves CHECK_EXISTING_APPLICATION's statusMessage (unconditionally applicable there,
+      // same as before) — only gated to Home loan/LAP for the eligibility-check path, since
+      // Personal/Gold/Business loan and Loan Against Securities have their own terminal 'result'
+      // step (plResult/etc.) and never reach this one.
+      isApplicable: (ctx) => !isEligibilityIntent(ctx.answers) || isHomeLoanOrLap(ctx.answers),
       botMessage: (ctx) => {
         if (!isEligibilityIntent(ctx.answers)) return (ctx.answers.statusMessage as string) ?? 'Checking your application status…';
+        const payload = ctx.answers.resultPayload as EligibilityResultPayload | undefined;
+        if (payload?.entityNotSupported) return "We don't have a journey for entities yet — this product is currently only available for individual applicants.";
+        if (payload?.underageNotSupported) return "We're unable to proceed — applicants must be at least 18 years old for this product.";
         // By 'result', both branches have cleared identity OTP + bureau-consent OTP — the real
         // first name (firstName() prefers fullName over the masked name) is fair to show either way.
         if (ctx.answers.name || ctx.answers.fullName) return `Here's your loan eligibility, ${firstName(ctx)}.`;
