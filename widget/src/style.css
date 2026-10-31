@@ -1291,6 +1291,18 @@
 .lc-badge{display:inline-flex;align-items:center;gap:6px;font:500 11px var(--sans);padding:6px 12px;border-radius:100px;background:var(--la-soft);color:var(--la-gold);margin-bottom:14px}
 .lc-badge-muted{background:var(--la-line);color:var(--la-muted)}
 .lc-not-eligible{border:1px solid var(--la-line);border-radius:10px;background:var(--la-card);padding:16px 18px;margin-bottom:14px}
+/* .lc-min-bar/.lc-result-pill (the not-eligible result card's minimize button and its collapsed
+   "tap to view" pill — see minimizeBarHtml/collapsedPillHtml in resultCard.ts) had ZERO CSS
+   anywhere, rendering as plain unstyled text (2026-10-31 report: inconsistent across viewers, and
+   "make the minimize and show eligibility buttons bigger and pill like"). Sized and styled to match
+   the other pill buttons already established (.la-secondary/.lc-ghost-btn) instead of CIS's own
+   plain-text-link treatment for this specific state (no CIS design was ever captured for it). */
+.lc-min-bar{display:flex;align-items:center;gap:8px;margin:0 0 14px;border:1px solid #D9C7A4;border-radius:100px;background:var(--la-card);color:var(--la-ink);padding:10px 22px;min-height:44px;font:500 13px var(--sans);cursor:pointer}
+.lc-min-bar:hover{border-color:var(--la-gold);background:var(--la-soft)}
+.lc-min-bar svg{width:16px;height:16px;flex:none}
+.lc-result-pill{display:flex;align-items:center;gap:10px;border:1px solid #D9C7A4;border-radius:100px;background:var(--la-card);color:var(--la-ink);padding:12px 22px;min-height:48px;font:500 13px var(--sans);text-align:left;cursor:pointer}
+.lc-result-pill:hover{border-color:var(--la-gold);background:var(--la-soft)}
+.lc-result-pill svg{width:16px;height:16px;flex:none;color:var(--la-gold)}
 .lc-not-eligible-title{font-size:14px;font-weight:600;color:var(--la-ink);margin-bottom:6px}
 .lc-not-eligible-text{font-size:12.5px;color:var(--la-muted);line-height:1.5}
 

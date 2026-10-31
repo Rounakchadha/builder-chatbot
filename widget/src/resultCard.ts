@@ -234,7 +234,6 @@ function renderGoldResultCard(result: EligibilityResultPayload): string {
   if (!result.eligible || !best) {
     return `
       <div id="lc-result-expanded">
-        <div class="lc-badge lc-badge-muted">${ICON.info} Eligibility check complete</div>
         <div class="lc-not-eligible">
           <div class="lc-not-eligible-title">No eligibility for this profile right now</div>
           <div class="lc-not-eligible-text">Based on the details provided, we couldn't find a lender offer for you at this time. Updating your details, or checking again later, may change this.</div>
@@ -304,7 +303,6 @@ function renderPersonalLoanResultCard(result: EligibilityResultPayload): string 
   if (!result.eligible || !best) {
     return `
       <div id="lc-result-expanded">
-        <div class="lc-badge lc-badge-muted">${ICON.info} Eligibility check complete</div>
         <div class="lc-not-eligible">
           <div class="lc-not-eligible-title">No eligibility for this profile right now</div>
           <div class="lc-not-eligible-text">Based on the income, EMI, and other details provided, we couldn't find a lender offer for you at this time. Updating your income or EMI details, or checking again later, may change this.</div>
@@ -397,7 +395,6 @@ export function renderResultCard(result: EligibilityResultPayload): string {
       ${collapsedPillHtml(result)}
       <div id="lc-result-expanded">
         ${minimizeBarHtml()}
-        <div class="lc-badge lc-badge-muted">${ICON.info} Eligibility check complete</div>
         <div class="lc-not-eligible">
           <div class="lc-not-eligible-title">No eligibility for this profile right now</div>
           <div class="lc-not-eligible-text">Based on the income, EMI, and other details provided, we couldn't find a lender offer for you at this time. Updating your income or EMI details, or checking again later, may change this.</div>
