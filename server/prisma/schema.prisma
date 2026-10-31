@@ -124,6 +124,17 @@ model Lead {
   remoteCustomerId Int?
   product          String?
 
+  // Added 2026-10-31 (bug fix, same report as above): the RM-summary email (routes/chat.ts,
+  // emailService.sendRmSummary — our OWN code, not a Finfinity-side effect) was guarded by
+  // ctx.answers.rmSummaryEmailSent, which only prevents a re-send within the SAME conversation
+  // (re-renders of the same result step). A brand-new conversation for a returning customer starts
+  // with that flag unset, so even once the lead-reuse fix above stopped creating duplicate real
+  // leads, every "Start over" still fired a fresh email — confirmed live: lead dedupe worked (same
+  // builderLeadId reused 5 times) but the email still went out each time. This flag is checked
+  // across EVERY conversation sharing the same remoteCustomerId+product (see
+  // hasRmSummaryEmailAlreadySent/markRmSummaryEmailSent in lead.service.ts), not just this one.
+  rmEmailSent Boolean @default(false)
+
   // Security-review finding, 2026-10-23: listApplications (routes/chat.ts) and ensureLead's own
   // P2002-recovery lookup both query by builderLeadId-adjacent patterns and by this id directly in
   // status lookups — no index meant a full table scan as Lead rows grow.

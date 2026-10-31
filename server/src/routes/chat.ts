@@ -12,7 +12,7 @@ import { createSession, loadSession, persistAnswer, advanceCurrentStep, saveSess
 import { smsService } from '../services/sms.service';
 import { FinfinityApiError } from '../services/finfinityClient';
 import { goldLeadService } from '../services/goldLoan.service';
-import { leadService } from '../services/lead.service';
+import { leadService, ensureLeadOnce, hasRmSummaryEmailAlreadySent, markRmSummaryEmailSent } from '../services/lead.service';
 import { personalLoanFinancerService, type PlFinancerLenderEntry } from '../services/personalLoanFinancer.service';
 import { env } from '../config/env';
 import { emailService } from '../services/email.service';
@@ -151,42 +151,55 @@ async function render(stepId: string, sessionToken: string, ctx: StepContext, er
     // collect one too before a lead/RM follow-up is even possible.
     response.panOfferNeedsMobile = !ctx.answers.mobile;
 
-    // RM summary email — fired exactly once per conversation, the first time a lead (real or
-    // dummy) actually exists, regardless of product. `rmSummaryEmailSent` guards against sending
-    // again on every re-render of the same result step (widget polling, page refresh, etc.).
+    // RM summary email — fired exactly once per REAL customer+product, the first time a lead (real
+    // or dummy) actually exists, regardless of product. `rmSummaryEmailSent` guards against sending
+    // again on every re-render of the same result step WITHIN this conversation (widget polling,
+    // page refresh, etc.), but that alone wasn't enough: a brand-new conversation for a RETURNING
+    // customer starts with that flag unset too, so even after the lead-reuse fix stopped creating
+    // duplicate real leads, every "Start over" still fired a fresh email (confirmed live, 2026-10-31
+    // — same builderLeadId correctly reused 5 times, yet the email still went out each time).
+    // hasRmSummaryEmailAlreadySent checks across EVERY conversation sharing this remoteCustomerId+
+    // product, not just this one — see its own doc comment in lead.service.ts.
     if (payload?.leadCreated && payload.rm && !ctx.answers.rmSummaryEmailSent) {
       const product = payload.product ?? (ctx.answers.product as string | undefined) ?? 'Unknown';
-      // Gold Loan/LAS send everything the customer answered; Business Loan sends everything except
-      // PAN and CIBIL score (2026-10-21 instruction) — every other product still only gets the
-      // generic rows above, unchanged.
-      const productDetails =
-        product === 'Gold Loan'
-          ? buildGoldLoanRmDetails(ctx)
-          : product === 'Loan Against Securities'
-            ? buildLasRmDetails(ctx)
-            : product === 'Business Loan'
-              ? buildBusinessLoanRmDetails(ctx)
-              : undefined;
-      // Security-review finding, 2026-10-23: the "sent" flag used to be set BEFORE this call, so a
-      // real SMTP failure (sendRmSummary logs and swallows its own error, see email.service.ts) was
-      // marked permanently "done" anyway — the RM silently never heard about the lead with nothing
-      // to retry it. Now only persisted once the send actually reports success.
-      const sent = await emailService.sendRmSummary({
-        // TEMPORARY (2026-10-21 instruction) — every send goes to RM_EMAIL_OVERRIDE_TO instead of
-        // the real/fallback RM's own email, for test visibility. RM name/phone shown in the email
-        // body are still the real assigned RM's — only the actual delivery address is overridden.
-        rm: env.RM_EMAIL_OVERRIDE_TO ? { ...payload.rm, email: env.RM_EMAIL_OVERRIDE_TO } : payload.rm,
-        customerName: ctx.answers.name as string | undefined,
-        mobile: ctx.answers.mobile as string | undefined,
-        customerEmail: ctx.answers.email as string | undefined,
-        product,
-        loanType: payload.loanType,
-        leadId: payload.leadId,
-        productDetails,
-      });
-      if (sent) {
+      const alreadySentElsewhere = await hasRmSummaryEmailAlreadySent(ctx.answers.remoteCustomerId as number | undefined, product);
+      if (alreadySentElsewhere) {
         ctx.answers.rmSummaryEmailSent = true;
         await persistAnswer(ctx.conversationId, 'rmSummaryEmailSent', true);
+      } else {
+        // Gold Loan/LAS send everything the customer answered; Business Loan sends everything except
+        // PAN and CIBIL score (2026-10-21 instruction) — every other product still only gets the
+        // generic rows above, unchanged.
+        const productDetails =
+          product === 'Gold Loan'
+            ? buildGoldLoanRmDetails(ctx)
+            : product === 'Loan Against Securities'
+              ? buildLasRmDetails(ctx)
+              : product === 'Business Loan'
+                ? buildBusinessLoanRmDetails(ctx)
+                : undefined;
+        // Security-review finding, 2026-10-23: the "sent" flag used to be set BEFORE this call, so a
+        // real SMTP failure (sendRmSummary logs and swallows its own error, see email.service.ts) was
+        // marked permanently "done" anyway — the RM silently never heard about the lead with nothing
+        // to retry it. Now only persisted once the send actually reports success.
+        const sent = await emailService.sendRmSummary({
+          // TEMPORARY (2026-10-21 instruction) — every send goes to RM_EMAIL_OVERRIDE_TO instead of
+          // the real/fallback RM's own email, for test visibility. RM name/phone shown in the email
+          // body are still the real assigned RM's — only the actual delivery address is overridden.
+          rm: env.RM_EMAIL_OVERRIDE_TO ? { ...payload.rm, email: env.RM_EMAIL_OVERRIDE_TO } : payload.rm,
+          customerName: ctx.answers.name as string | undefined,
+          mobile: ctx.answers.mobile as string | undefined,
+          customerEmail: ctx.answers.email as string | undefined,
+          product,
+          loanType: payload.loanType,
+          leadId: payload.leadId,
+          productDetails,
+        });
+        if (sent) {
+          ctx.answers.rmSummaryEmailSent = true;
+          await persistAnswer(ctx.conversationId, 'rmSummaryEmailSent', true);
+          await markRmSummaryEmailSent(ctx.conversationId);
+        }
       }
     }
   }
@@ -519,8 +532,13 @@ export async function chatRoutes(app: FastifyInstance) {
     let leadId = payload.leadId;
     let rm: { name: string; phone: string; email: string } | undefined;
     if (!leadId) {
-      const lead = await leadService.createLead({
+      // Routed through ensureLeadOnce (2026-10-31 fix, same as every flow's own lead-creation step)
+      // instead of calling leadService.createLead directly — reuses an existing real lead for this
+      // customer+product if one already exists, rather than risking a duplicate in this rarer
+      // "no lead yet by the time an offer was picked" edge case.
+      const lead = await ensureLeadOnce({
         conversationId: ctx.conversationId,
+        rawPan: ctx.answers.pan as string,
         panMasked: maskPan(ctx.answers.pan as string),
         name: ctx.answers.name as string | undefined,
         mobileMasked: ctx.answers.mobile ? maskMobile(ctx.answers.mobile as string) : undefined,

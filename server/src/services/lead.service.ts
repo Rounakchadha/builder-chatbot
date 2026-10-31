@@ -306,3 +306,22 @@ export async function ensureLeadOnce(input: EnsureLeadInput): Promise<LeadSyncRe
   }
   return result;
 }
+
+/** Has the RM-summary email already gone out for this exact customer+product, in ANY conversation?
+ * See Lead.rmEmailSent's own doc comment in schema.prisma for the bug this fixes — checked by
+ * routes/chat.ts BEFORE calling emailService.sendRmSummary, not just ctx.answers' own per-
+ * conversation flag. Mock mode (no remoteCustomerId) has no cross-conversation identity to check
+ * against, same as ensureLeadOnce's own lead-reuse dedupe — always false there. */
+export async function hasRmSummaryEmailAlreadySent(remoteCustomerId: number | undefined, product: string): Promise<boolean> {
+  if (remoteCustomerId === undefined) return false;
+  const prior = await prisma.lead.findFirst({ where: { remoteCustomerId, product, rmEmailSent: true } });
+  return Boolean(prior);
+}
+
+/** Marks THIS conversation's own Lead row as having sent the RM-summary email — called once
+ * emailService.sendRmSummary actually reports success. A later conversation reusing the same real
+ * lead will find this via hasRmSummaryEmailAlreadySent regardless of which conversation's row it's
+ * actually stored on, since that query matches on remoteCustomerId+product, not conversationId. */
+export async function markRmSummaryEmailSent(conversationId: string): Promise<void> {
+  await prisma.lead.update({ where: { conversationId }, data: { rmEmailSent: true } });
+}
