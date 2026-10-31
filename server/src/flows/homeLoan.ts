@@ -449,7 +449,12 @@ async function ensureLead(
   });
   const builderLeadId = result.builderLeadId;
 
-  if (opts?.syncFullProfile && builderLeadId) {
+  // Skip the sync for a REUSED lead (2026-10-31 fix) — updateLead/updateCustomer appear to retrigger
+  // Finfinity's own lead notification every time they run, not just on creation (confirmed: 5 "Start
+  // over" conversations for the same returning customer correctly reused the same real lead — no new
+  // create_anacity_lead calls — yet the email spam to Sparsh continued, because this ran unconditionally
+  // every time regardless). A genuinely new lead still gets its full profile synced immediately.
+  if (opts?.syncFullProfile && builderLeadId && !result.reused) {
     await syncLeadFinancials(ctx, builderLeadId, info.pan, info.loanType);
   }
 

@@ -522,21 +522,19 @@ export class ChatWidget {
   private scrollToResultTop() {
     // Stops any bot-reply typing animation still mid-flight (e.g. the "you're eligible" message
     // shown right before this) from re-dragging the view back to the bottom on its own later frames
-    // — see typeOutBubble's own doc comment for the full bug this caused (2026-10-31: "drags the
-    // screen to the end... where the RM is... have to scroll up to see the main cards").
+    // — see typeOutBubble's own doc comment. THIS, not scrollIntoView itself, was almost certainly
+    // the real cause of the "drags the screen to the end... have to scroll up to see the main
+    // cards" report: scrollDown() (from the bot bubble right before the result) and the typing
+    // animation's own per-frame scrollDown() calls were both still firing AFTER this ran, winning
+    // the race and re-forcing the bottom. A geometry-based scrollTop calculation (tried 2026-10-31
+    // as the fix, before the real cause above was found) turned out to be its own dead end — .la-
+    // chat is `justify-content:flex-end`, which several engines handle inconsistently for manual
+    // scrollTop math on an overflowing flex container; scrollIntoView is the spec-correct, native
+    // way to do this and isn't affected by that quirk, so it's back now that the actual race is
+    // fixed instead of the symptom it was wrongly blamed for.
     this.suppressAutoScrollFollow = true;
     requestAnimationFrame(() => {
-      // Geometry-based instead of scrollIntoView (2026-10-31 fix) — scrollIntoView was confirmed
-      // landing at the very BOTTOM of the chat (the RM card) instead of the result card's own top,
-      // on a real deployed phone, even though the identical code reliably scrolled to the right
-      // place on desktop — some nested-scroll-container quirk scrollIntoView has on mobile Safari.
-      // Computing the delta via getBoundingClientRect and setting scrollTop directly (the same
-      // mechanism scrollDown() above already uses, which the customer confirmed DOES work correctly
-      // on the real device, just at the wrong target) sidesteps that entirely.
-      const containerRect = this.resultContainerEl.getBoundingClientRect();
-      const bodyRect = this.bodyEl.getBoundingClientRect();
-      const delta = containerRect.top - bodyRect.top;
-      this.bodyEl.scrollTop = Math.max(0, this.bodyEl.scrollTop + delta - 8);
+      this.resultContainerEl.scrollIntoView({ block: 'start', behavior: 'auto' });
     });
   }
 

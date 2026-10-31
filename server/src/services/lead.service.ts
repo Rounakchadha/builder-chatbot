@@ -28,6 +28,14 @@ export interface LeadSyncResult {
    * create_anacity_lead's own response. Only ever set by the real service; the mock leaves this
    * undefined so the flow's placeholder RM (see flows/rm.ts's pickRm) still applies there. */
   rm?: { name: string; phone: string; email: string };
+  /** True when this call found and reused an existing lead instead of creating a new one — see
+   * ensureLeadOnce. Callers should skip any "push the full profile onto this lead" follow-up sync
+   * (updatelead/updatecustomer) when true: those calls appear to trigger Finfinity's own lead
+   * notification EVERY time they run, not just on creation — confirmed 2026-10-31 by 5 "Start over"
+   * conversations for the same returning customer correctly reusing the same real builderLeadId
+   * (lead creation itself was NOT duplicated), yet the email spam to Sparsh continued anyway, because
+   * each one still called updateLead/updateCustomer unconditionally right after. */
+  reused?: boolean;
 }
 
 /** Everything updatelead accepts — the fields getcustomeroffers actually needs to compute a real
@@ -247,7 +255,7 @@ export async function ensureLeadOnce(input: EnsureLeadInput): Promise<LeadSyncRe
   // a double-click or a retried request after a network blip shouldn't create a second real lead.)
   const existingHere = await prisma.lead.findUnique({ where: { conversationId: input.conversationId } });
   if (existingHere) {
-    return { builderLeadId: existingHere.builderLeadId, status: existingHere.builderSyncStatus as LeadSyncResult['status'] };
+    return { builderLeadId: existingHere.builderLeadId, status: existingHere.builderSyncStatus as LeadSyncResult['status'], reused: true };
   }
 
   const leadRowData = (builderLeadId: string | null, builderSyncStatus: LeadSyncResult['status']): Prisma.LeadUncheckedCreateInput => ({
@@ -280,7 +288,7 @@ export async function ensureLeadOnce(input: EnsureLeadInput): Promise<LeadSyncRe
         { event: 'lead_reused_existing', conversationId: input.conversationId, remoteCustomerId: input.remoteCustomerId, product: input.product, builderLeadId: prior.builderLeadId },
         'reusing an already-created real lead for this customer+product instead of creating a duplicate',
       );
-      return { builderLeadId: prior.builderLeadId, status: 'synced' };
+      return { builderLeadId: prior.builderLeadId, status: 'synced', reused: true };
     }
   }
 
