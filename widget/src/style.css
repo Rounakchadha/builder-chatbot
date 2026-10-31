@@ -561,11 +561,11 @@
 .la-message:not(.is-user) .la-bubble{border:0;border-radius:22px;box-shadow:none;padding:22px 26px}
 .la-message:not(.is-user) .la-bubble:before{left:4px;top:18px;bottom:18px;width:3px;border-radius:100px;background:linear-gradient(180deg,#E7D9BC,#EFE8DA)}
 /* Compact logo / title / subtitle lockup, with both actions alongside. */
-.lc-panel>.la-header{display:flex;align-items:center;justify-content:space-between;padding:18px 28px;gap:20px}
-.la-header .la-brand{display:flex;align-items:center;gap:20px;min-width:0;flex:1}
+.lc-panel>.la-header{display:flex;align-items:center;justify-content:space-between;padding:12px 28px;gap:20px}
+.la-header .la-brand{display:flex;align-items:center;gap:16px;min-width:0;flex:1}
 .la-header .la-header-logo{display:block;width:104px;height:44px;object-fit:contain;flex:none}
 .la-header .la-brand-copy{min-width:0}
-.la-header h2{font-size:28px;margin:0 0 6px}
+.la-header h2{font-size:20px;margin:0 0 3px}
 .la-header .la-eyebrow{display:block;margin:0;font-size:11px}
 .la-header .la-eyebrow:before{display:none}
 .la-header .la-header-actions{display:flex;align-items:center;gap:12px;margin:0;position:static;flex:none}
@@ -611,7 +611,8 @@
 .la-header .la-close{display:flex;align-items:center;justify-content:center;padding:0;line-height:0}
 .la-header .la-close svg{display:block;width:20px;height:20px;flex:none;margin:0;stroke:currentColor}
 
-.la-header .la-header-logo{height:56px;width:132.36px}
+/* Shrunk from 132.36x56 (2026-10-31 report: header "taking too much space") — same aspect ratio. */
+.la-header .la-header-logo{height:38px;width:89.82px}
 .la-layout .la-sidebar{display:flex;flex-direction:column}
 .la-sidebar>.la-detail,.la-sidebar>.la-empty,.la-sidebar>.la-details-heading,.la-sidebar>.la-details-subtext{flex-shrink:0}
 .la-sidebar>.la-powered{margin:auto 0 0;padding-top:20px;font:500 10px/1.5 var(--sans);color:var(--la-muted)}
