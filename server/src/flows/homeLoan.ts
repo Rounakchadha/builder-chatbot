@@ -408,7 +408,15 @@ async function computeEligibilityPayload(
     // Real one Finfinity actually assigned wins over anything previously computed or placeholder —
     // previous.rm only ever held a placeholder in the first place if no real one had come back yet.
     rm: realRm ?? previous?.rm ?? pickRm(seedKey),
-    leadId: previous?.leadId ?? generateLeadId(),
+    // Bug fixed 2026-10-31: this ignored the builderLeadId parameter entirely — every call from
+    // computeResultPayload (the main eligibility path) already has the REAL Finfinity lead id by
+    // this point, but it never reached this field, which instead always fell through to
+    // generateLeadId()'s fake "LN<digits><2 letters>" placeholder (since `previous` is undefined on
+    // the first computation). The RM-summary email, and anything else reading payload.leadId, showed
+    // that fake id forever instead of the real one actually stored in our own backend. Real id now
+    // wins whenever one exists; the placeholder only still applies pre-PAN/pre-lead (not eligible to
+    // create a real lead yet) or when neither a fresh nor a previous real id is available.
+    leadId: builderLeadId ?? previous?.leadId ?? generateLeadId(),
     leadCreated: previous?.leadCreated ?? false,
   };
 }
@@ -509,9 +517,11 @@ export async function createLeadFromResult(
   info: { pan: string; name?: string; creditScore?: number },
 ): Promise<EligibilityResultPayload> {
   const lead = await ensureLead(ctx, { ...info, product: base.product, loanType: base.loanType });
-  // base.rm was only ever a placeholder up to now — no lead existed yet to have a real one
-  // assigned against. Swap it in if create_anacity_lead just handed one back.
-  return { ...base, rm: lead.rm ?? base.rm, leadCreated: true };
+  // base.rm/base.leadId were only ever placeholders up to now — no lead existed yet to have a real
+  // one assigned against. Swap both in now that create_anacity_lead has actually run (2026-10-31
+  // fix — leadId used to stay the fake generateLeadId() placeholder forever here too, same bug as
+  // computeEligibilityPayload's own leadId field).
+  return { ...base, rm: lead.rm ?? base.rm, leadId: lead.builderLeadId ?? base.leadId, leadCreated: true };
 }
 
 /** Kicked off as soon as 'profileSummary' is reached (the recap right before 'result') instead of
