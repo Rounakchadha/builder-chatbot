@@ -819,9 +819,28 @@ export class ChatWidget {
     if (restartBtn) restartBtn.onclick = () => this.restart();
     this.wireResultMinimize();
     this.wireLenderToggles();
+    this.wireLenderAccordionScroll();
     this.wireGoldSubmitCard();
     this.wireSelectOfferButtons();
     this.renderPanOffer();
+  }
+
+  /** The lender rows (<details class="la-lender">, see resultCard.ts) expand in place natively —
+   * nothing stops the newly-revealed detail from landing partly or fully below the visible chat
+   * area, especially for a row near the bottom of the list (2026-10-31 report: "when u click the
+   * lender button it should come into frame"). Brings whichever one was just opened fully into view
+   * once its content has actually expanded (the native 'toggle' event fires right as `open` flips,
+   * so wait a frame for layout to catch up first). Only scrolls on OPEN, not collapse — collapsing
+   * shouldn't yank the view anywhere. */
+  private wireLenderAccordionScroll() {
+    this.resultContainerEl.querySelectorAll<HTMLDetailsElement>('.la-lender').forEach((details) => {
+      details.addEventListener('toggle', () => {
+        if (!details.open) return;
+        requestAnimationFrame(() => {
+          details.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        });
+      });
+    });
   }
 
   /** "Select this offer" buttons on HL/LAP's lender-detail breakdown and Personal Loan's lender

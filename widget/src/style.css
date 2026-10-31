@@ -1308,6 +1308,19 @@
 .lc-gold-submit-estimate-note{font-size:11px;line-height:1.5;color:var(--la-muted);margin-top:12px}
 .lc-select-offer-slot{margin-top:4px}
 .lc-gold-submit-confirmed{display:flex;align-items:center;gap:10px;border:1px solid var(--la-line);border-radius:12px;background:var(--la-card);padding:16px 18px;margin:14px 0;font-size:13.5px;color:var(--la-ink)}
+/* "You're all set with <lender>" card shown once an offer is selected (resultCard.ts's
+   lenderThankYouHtml) — had ZERO CSS anywhere (2026-10-31 report: "not readable"), same recurring
+   bug pattern as every other old-class component this session. Logo badge mirrors .la-bank-icon's
+   own position:absolute img-sizing fix (plain <img> tags otherwise render at their huge intrinsic
+   size with no CSS at all). Text color explicitly set to var(--la-ink) — un-styled text here was
+   likely inheriting a low-contrast default against the card's background. */
+.lc-offer-thank-you{display:flex;align-items:center;gap:14px;border:1px solid var(--la-line);border-radius:12px;background:var(--la-card);padding:18px}
+.lc-offer-thank-you-logo{position:relative;width:64px;height:44px;flex:none;display:grid;place-items:center;border:1px solid var(--la-line);border-radius:8px;background:#fff;overflow:hidden}
+.lc-offer-thank-you-logo img{position:absolute;inset:4px;width:calc(100% - 8px)!important;height:calc(100% - 8px)!important;max-width:none!important;object-fit:contain;object-position:center}
+.lc-offer-thank-you-text{min-width:0}
+.lc-offer-thank-you-title{font-size:14px;font-weight:500;color:var(--la-ink);margin-bottom:4px}
+.lc-offer-thank-you-sub{font-size:12px;color:var(--la-muted)}
+@media(max-width:700px){.lc-offer-thank-you{padding:14px;gap:10px}.lc-offer-thank-you-logo{width:52px;height:36px}}
 .lc-gold-submit-confirmed svg{flex:none;width:18px;height:18px;color:var(--la-gold)}
 
 /* Custom "Start over" confirmation dialog (2026-10-30) — replaces window.confirm(), which can't be
