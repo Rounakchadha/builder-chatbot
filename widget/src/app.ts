@@ -686,11 +686,21 @@ export class ChatWidget {
     const originals = textNodes.map((t) => t.data);
     textNodes.forEach((t) => (t.data = ''));
 
-    const maxDurationMs = 420;
-    const minPerCharMs = 9;
+    // Slowed down slightly (2026-10-31: "decrease its speed a little bit") and, more importantly,
+    // fixed a real perf bug that was likely the actual source of the reported lag/glitch: every
+    // frame was calling the full scrollDown() (itself scheduling a SECOND, nested rAF) purely to set
+    // scrollTop = scrollHeight — reading scrollHeight and writing scrollTop both force a synchronous
+    // layout, so that was two forced reflows on top of the text mutation's own reflow, every ~16ms
+    // for the animation's whole duration. Now scrolls inline (no nested rAF) and only every 4th
+    // frame — following the bubble's growth doesn't need to happen literally every frame to look
+    // smooth, and this cuts the forced-reflow count by ~75%.
+    const maxDurationMs = 550;
+    const minPerCharMs = 11;
     const totalDuration = Math.min(maxDurationMs, totalChars * minPerCharMs);
     const start = performance.now();
+    let frame = 0;
     const step = (now: number) => {
+      frame++;
       const elapsed = now - start;
       const revealed = Math.min(totalChars, Math.round((elapsed / totalDuration) * totalChars));
       let remaining = revealed;
@@ -700,8 +710,11 @@ export class ChatWidget {
         remaining -= len;
         if (remaining <= 0) break;
       }
-      if (followScroll && !this.suppressAutoScrollFollow) this.scrollDown();
-      if (revealed < totalChars) requestAnimationFrame(step);
+      const isLastFrame = revealed >= totalChars;
+      if (followScroll && !this.suppressAutoScrollFollow && (frame % 4 === 0 || isLastFrame)) {
+        this.bodyEl.scrollTop = this.bodyEl.scrollHeight;
+      }
+      if (!isLastFrame) requestAnimationFrame(step);
     };
     requestAnimationFrame(step);
   }

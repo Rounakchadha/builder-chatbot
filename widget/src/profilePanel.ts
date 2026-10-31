@@ -90,7 +90,12 @@ export class ProfilePanel {
         showError(result.error ?? "Couldn't save that.");
       }
     };
-    valueRow.querySelector<HTMLButtonElement>('.lc-sidebar-save')!.onclick = save;
+    // Bug fixed 2026-10-31 ("tick button vanishes and nothing happens"): this looked for
+    // '.lc-sidebar-save', a class that was never actually rendered anywhere — the button above is
+    // '.la-detail-edit' (reused for both the original Edit button and this save button). The
+    // querySelector call always returned null, so `.onclick = save` threw immediately and no
+    // handler was ever attached — the save button was visible but completely inert.
+    valueRow.querySelector<HTMLButtonElement>('.la-detail-edit')!.onclick = save;
     input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') save();
     });
