@@ -619,10 +619,12 @@
 @media(max-width:700px){.la-header .la-header-logo{height:52px;width:83.2px}.la-layout .la-sidebar{display:none}.la-layout .la-sidebar.is-open{display:flex}}
 
 /* Progress panel matching CIS design */
-.la-progress-row{display:flex;align-items:center;gap:16px;margin:16px 28px 0;flex:none;min-width:0}
-.la-progress-row>.la-progress{flex:1;min-width:0;margin:0;padding:12px 18px;border:1px solid var(--la-line);border-radius:14px;background:var(--la-card);box-shadow:0 2px 8px rgba(0,0,0,.03)}
+/* Shrunk (2026-10-31 report: "getting started waale ko bhi thoda chota kardo... too much space") —
+   row margin, card padding, and the gap before the segment bars all reduced. */
+.la-progress-row{display:flex;align-items:center;gap:12px;margin:10px 28px 0;flex:none;min-width:0}
+.la-progress-row>.la-progress{flex:1;min-width:0;margin:0;padding:8px 16px;border:1px solid var(--la-line);border-radius:12px;background:var(--la-card);box-shadow:0 2px 8px rgba(0,0,0,.03)}
 .lc-root.is-dark .la-progress-row>.la-progress,.lc-panel.is-dark .la-progress-row>.la-progress{border-color:#3A3D40;background:#222527;box-shadow:none}
-.la-progress-copy{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 10px}
+.la-progress-copy{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 6px}
 .la-progress-copy>#laStage,.la-progress-copy>.la-phase{display:block;order:0;font:500 11px/1.4 var(--mono,'JetBrains Mono',monospace);letter-spacing:.14em;text-transform:uppercase;color:var(--la-muted)}
 .la-progress-copy>#laStep,.la-progress-copy>.la-percent{display:block;order:1;margin-left:auto;font:600 11px/1.4 var(--mono,'JetBrains Mono',monospace);color:var(--la-gold);white-space:nowrap}
 .lc-root.is-dark .la-progress-copy>#laStep,.lc-panel.is-dark .la-progress-copy>#laStep{color:#E0BD70}
@@ -630,7 +632,7 @@
 .la-segments{display:flex;gap:7px}
 .la-segments i{flex:1;height:4px;border-radius:4px;background:linear-gradient(to right,var(--la-gold,#A8842F) var(--fill,0%),var(--la-line,#E2DDD2) var(--fill,0%));transition:background .25s ease}
 .lc-root.is-dark .la-segments i,.lc-panel.is-dark .la-segments i{background:linear-gradient(to right,#E0BD70 var(--fill,0%),#3A3D40 var(--fill,0%))}
-.la-progress-row>.la-restart{flex:none;min-height:40px;padding:9px 18px;border:1px solid var(--la-line);border-radius:100px;background:var(--la-card);color:var(--la-ink);font:500 12px/1.2 var(--sans,'Plus Jakarta Sans',system-ui,sans-serif);cursor:pointer;transition:border-color .15s ease,background .15s ease}
+.la-progress-row>.la-restart{flex:none;min-height:34px;padding:7px 16px;border:1px solid var(--la-line);border-radius:100px;background:var(--la-card);color:var(--la-ink);font:500 12px/1.2 var(--sans,'Plus Jakarta Sans',system-ui,sans-serif);cursor:pointer;transition:border-color .15s ease,background .15s ease}
 .la-progress-row>.la-restart:hover{border-color:var(--la-gold);background:var(--la-soft)}
 .lc-root.is-dark .la-progress-row>.la-restart,.lc-panel.is-dark .la-progress-row>.la-restart{border-color:#3A3D40;background:#24282B;color:#F8F2E7}
 @media(max-width:700px){
