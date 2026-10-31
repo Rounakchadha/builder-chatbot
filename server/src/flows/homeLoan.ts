@@ -35,7 +35,7 @@ function isEligibilityIntent(answers: Answers): boolean {
  * they only drop out once a *different* product is actually chosen, which is what keeps the
  * progress bar's total from being inflated by Home loan-only steps for those other products. */
 function isHomeLoanOrLap(answers: Answers): boolean {
-  return !answers.product || answers.product === 'Home loan' || answers.product === 'Loan against property';
+  return !answers.product || answers.product === 'Home loan' || answers.product === 'Loan Against Property';
 }
 
 /** PAN's 4th character is the Income Tax Department's own entity-type code — 'P' is an individual;
@@ -123,7 +123,7 @@ function isBT(answers: Answers): boolean {
 
 /** Property is already identified for balance transfers and LAP-against-owned-property; still needs asking for fresh purchases. */
 function propertyAlreadyIdentified(answers: Answers): boolean {
-  return isBT(answers) || answers.loanType === 'Loan against property (LAP)';
+  return isBT(answers) || answers.loanType === 'Loan Against Property (LAP)';
 }
 
 export function calcAge(dobIso: string): number {
@@ -752,7 +752,6 @@ export const homeLoanFlow: FlowDefinition = {
       progressLabel: 'Verifying identity',
       isApplicable: (ctx) => needsIdentityOtp(ctx.answers) && !ctx.answers.finfinityAccessToken,
       botMessage: (ctx) => `We've sent a 6-digit OTP to +91 ${maskMobile(ctx.answers.mobile as string)} — entering it confirms it's you.`,
-      hint: () => 'Confirms the number is yours.',
       input: () => ({ type: 'otp', length: 6 }),
       validate: (value) => {
         const v = (value || '').replace(/\s/g, '');
@@ -1002,7 +1001,6 @@ export const homeLoanFlow: FlowDefinition = {
       // panDuplicateChoice's own message just one step later. The OTP still goes to that real
       // number; this just stops echoing it back to the person who hasn't proven they own it.
       botMessage: () => `We've sent a 6-digit OTP to that account's registered mobile number — entering it verifies it's your account.`,
-      hint: () => 'Confirms the number is yours.',
       input: () => ({ type: 'otp', length: 6 }),
       validate: (value) => {
         const v = (value || '').replace(/\s/g, '');
@@ -1155,7 +1153,6 @@ export const homeLoanFlow: FlowDefinition = {
       isApplicable: (ctx) => ctx.answers.duplicateField === 'email' && ctx.answers.emailDuplicateChoice === 'Verify with that number',
       // See otpPanDuplicateVerify's own comment above — same leak, same fix.
       botMessage: () => `We've sent a 6-digit OTP to that account's registered mobile number — entering it verifies it's your account.`,
-      hint: () => 'Confirms the number is yours.',
       input: () => ({ type: 'otp', length: 6 }),
       validate: (value) => {
         const v = (value || '').replace(/\s/g, '');
@@ -1306,7 +1303,6 @@ export const homeLoanFlow: FlowDefinition = {
       progressLabel: 'Verifying identity',
       isApplicable: (ctx) => ctx.answers.dedupeFound === true && !ctx.answers.creditScore && isIndividualPan(ctx.answers.pan as string | undefined),
       botMessage: (ctx) => `We've sent a 6-digit code to +91 ${maskMobile(ctx.answers.mobile as string)} — entering it gives us your consent to pull your credit bureau report.`,
-      hint: () => 'Confirms the number is yours and gives bureau consent.',
       input: () => ({ type: 'otp', length: 6 }),
       validate: (value) => {
         const v = (value || '').replace(/\s/g, '');
@@ -1379,7 +1375,6 @@ export const homeLoanFlow: FlowDefinition = {
       progressLabel: 'Verifying identity',
       isApplicable: (ctx) => ctx.answers.dedupeFound === false && isIndividualPan(ctx.answers.pan as string | undefined),
       botMessage: (ctx) => `We've sent a 6-digit code to +91 ${maskMobile(ctx.answers.mobile as string)} — entering it gives us your consent to pull your credit bureau report.`,
-      hint: () => 'Confirms the number is yours and gives bureau consent.',
       input: () => ({ type: 'otp', length: 6 }),
       validate: (value) => {
         const v = (value || '').replace(/\s/g, '');
@@ -1492,7 +1487,7 @@ export const homeLoanFlow: FlowDefinition = {
       input: (ctx) => ({ type: 'choice', options: productOptionsFor(ctx), layout: 'column' }),
       // Personal loan/Gold loan/Business loan branch into their own short flows right after this
       // step (see flows/index.ts, which splices flows/personalLoan.ts etc. in here) — everything
-      // below in this file (loanType onward) only ever runs for Home loan/Loan against property,
+      // below in this file (loanType onward) only ever runs for Home loan/Loan Against Property,
       // same as before this step gained the three extra options.
       validate: (value, ctx) => validateChoice(ctx, 'product', productOptionsFor(ctx), value, `Which of these is it: ${productOptionsFor(ctx).join(', ')}?`),
     },
@@ -1605,7 +1600,7 @@ export const homeLoanFlow: FlowDefinition = {
       type: 'choice',
       progressLabel: 'Property details',
       isApplicable: (ctx) =>
-        isEligibilityIntent(ctx.answers) && ctx.answers.product === 'Loan against property' && (propertyAlreadyIdentified(ctx.answers) || ctx.answers.propertyGate === 'Yes'),
+        isEligibilityIntent(ctx.answers) && ctx.answers.product === 'Loan Against Property' && (propertyAlreadyIdentified(ctx.answers) || ctx.answers.propertyGate === 'Yes'),
       botMessage: () => "And what's the occupancy status of the property — is it self-occupied, rented, or vacant?",
       input: () => ({ type: 'choice', options: ['Self-occupied', 'Rented', 'Vacant'], layout: 'row' }),
       validate: (value, ctx) =>
@@ -1616,7 +1611,7 @@ export const homeLoanFlow: FlowDefinition = {
       type: 'choice',
       progressLabel: 'Property details',
       isApplicable: (ctx) =>
-        isEligibilityIntent(ctx.answers) && ctx.answers.product === 'Loan against property' && (propertyAlreadyIdentified(ctx.answers) || ctx.answers.propertyGate === 'Yes'),
+        isEligibilityIntent(ctx.answers) && ctx.answers.product === 'Loan Against Property' && (propertyAlreadyIdentified(ctx.answers) || ctx.answers.propertyGate === 'Yes'),
       botMessage: (ctx) => {
         const options = COLLATERAL_TYPES[ctx.answers.propertyType as string] ?? [];
         return `And what type of ${String(ctx.answers.propertyType).toLowerCase()} collateral is it — ${options.join(', ')}?`;

@@ -35,7 +35,7 @@ export function hashCode(str: string): number {
 
 export interface EligibilityInput {
   segment: Segment;
-  product: string; // 'Home loan' | 'Loan against property'
+  product: string; // 'Home loan' | 'Loan Against Property'
   income: number;
   emi: number;
 }

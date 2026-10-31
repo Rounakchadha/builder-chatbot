@@ -316,7 +316,7 @@ async function applyFieldEdit(state: SessionState, ctx: StepContext, field: stri
   // the answer is saved and the existing result is left exactly as it was instead of being
   // reached into with the wrong product's formula.
   const product = ctx.answers.product as string | undefined;
-  const isHomeLoanOrLap = !product || product === 'Home loan' || product === 'Loan against property';
+  const isHomeLoanOrLap = !product || product === 'Home loan' || product === 'Loan Against Property';
   if (ctx.answers.resultPayload && isHomeLoanOrLap) {
     const updated = await recomputeEligibility(ctx, ctx.answers.resultPayload as any);
     ctx.answers.resultPayload = updated;

@@ -32,10 +32,10 @@ export const SEGMENTS = ['Salaried', 'Business owner', 'Self-employed profession
 export type Segment = (typeof SEGMENTS)[number];
 
 // The flat list on the existing "what are you looking for" question (homeLoan.ts's 'product'
-// step). Home loan/Loan against property continue into the existing, unchanged flow (including
+// step). Home loan/Loan Against Property continue into the existing, unchanged flow (including
 // the Fresh purchase vs Balance transfer sub-choice that follows); the other three branch into
 // their own short flows right after this question (see flows/personalLoan.ts etc.).
-export const PRODUCT_OPTIONS = ['Home loan', 'Loan against property', 'Personal Loan', 'Gold Loan', 'Business Loan', 'Loan Against Securities'] as const;
+export const PRODUCT_OPTIONS = ['Home loan', 'Loan Against Property', 'Personal Loan', 'Gold Loan', 'Business Loan', 'Loan Against Securities'] as const;
 export type ProductOption = (typeof PRODUCT_OPTIONS)[number];
 
 // ---------- Personal loan ----------
@@ -72,14 +72,14 @@ export const LAS_FUNDS_TIMELINE = ['As soon as possible', 'Within 7 days', 'With
 
 export const LOAN_TYPES: Record<string, string[]> = {
   'Home loan': ['Fresh purchase', 'Balance transfer (BT)'],
-  'Loan against property': ['Property purchase', 'Loan against property (LAP)', 'Balance transfer (BT)'],
+  'Loan Against Property': ['Property purchase', 'Loan Against Property (LAP)', 'Balance transfer (BT)'],
 };
 
 export const PROPERTY_TYPES: Record<string, string[]> = {
   // 'Plot purchase' moved to the end (2026-10-31 direct instruction) — it's the least common choice
   // here, listing the more common ones first.
   'Home loan': ['Row house', 'Bungalow', 'Apartment', 'Plot purchase'],
-  'Loan against property': ['Residential', 'Commercial', 'Industrial'],
+  'Loan Against Property': ['Residential', 'Commercial', 'Industrial'],
 };
 
 // LAP-only — the collateral options depend on which of the three PROPERTY_TYPES['Loan against

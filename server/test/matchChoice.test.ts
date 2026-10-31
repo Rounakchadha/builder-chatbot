@@ -19,11 +19,11 @@ describe('matchChoice', () => {
   });
 
   it('expands common abbreviations before matching', () => {
-    expect(matchChoice('lap', ['Home loan', 'Loan against property'])).toBe('Loan against property');
+    expect(matchChoice('lap', ['Home loan', 'Loan Against Property'])).toBe('Loan Against Property');
     expect(matchChoice('bt', ['Fresh purchase', 'Balance transfer (BT)'])).toBe('Balance transfer (BT)');
   });
 
   it('returns null for genuinely unrelated text', () => {
-    expect(matchChoice('who is messi', ['Home loan', 'Loan against property'])).toBeNull();
+    expect(matchChoice('who is messi', ['Home loan', 'Loan Against Property'])).toBeNull();
   });
 });

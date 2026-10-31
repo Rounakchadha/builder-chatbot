@@ -49,7 +49,7 @@ describe('home loan flow branching', () => {
         intent: CHECK_EXISTING_APPLICATION,
         applications: [
           { builderLeadId: '1', label: 'Home loan (Lead ID: 1)' },
-          { builderLeadId: '2', label: 'Loan against property (Lead ID: 2)' },
+          { builderLeadId: '2', label: 'Loan Against Property (Lead ID: 2)' },
         ],
       },
       conversationId: 'test-convo',
@@ -135,7 +135,7 @@ describe('home loan flow branching', () => {
   });
 
   it('skips propertyGate for LAP-against-owned-property and goes straight to propertyType', () => {
-    const ctx = ctxWith({ dedupeFound: true, product: 'Loan against property', loanType: 'Loan against property (LAP)' });
+    const ctx = ctxWith({ dedupeFound: true, product: 'Loan Against Property', loanType: 'Loan Against Property (LAP)' });
     const next = nextStepId(homeLoanFlow, 'emi', ctx);
     expect(next).toBe('propertyType');
   });
@@ -152,29 +152,29 @@ describe('home loan flow branching', () => {
     expect(homeLoanPath).not.toContain('occupancy');
     expect(homeLoanPath).not.toContain('collateralType');
 
-    const lapCtx = ctxWith({ dedupeFound: true, product: 'Loan against property', loanType: 'Property purchase', propertyGate: 'Yes' });
+    const lapCtx = ctxWith({ dedupeFound: true, product: 'Loan Against Property', loanType: 'Property purchase', propertyGate: 'Yes' });
     const lapPath = applicablePath(homeLoanFlow, lapCtx).map((s) => s.id);
     expect(lapPath).toContain('occupancy');
     expect(lapPath).toContain('collateralType');
   });
 
   it('offers the right collateralType options for each LAP property type', () => {
-    const commercialCtx = ctxWith({ dedupeFound: true, product: 'Loan against property', loanType: 'Property purchase', propertyGate: 'Yes', propertyType: 'Commercial' });
+    const commercialCtx = ctxWith({ dedupeFound: true, product: 'Loan Against Property', loanType: 'Property purchase', propertyGate: 'Yes', propertyType: 'Commercial' });
     const commercialStep = getStep(homeLoanFlow, 'collateralType');
     expect(commercialStep.input(commercialCtx)).toMatchObject({
       // 'Plot' moved to the end of each list (2026-10-31 direct instruction).
       options: ['Godown', 'Hotel', 'School/College', 'Resort', 'Restaurant', 'Nursing Home', 'Hospital', 'APMC', 'Shop', 'Banquet Hall', 'Plot'],
     });
 
-    const industrialCtx = ctxWith({ dedupeFound: true, product: 'Loan against property', loanType: 'Property purchase', propertyGate: 'Yes', propertyType: 'Industrial' });
+    const industrialCtx = ctxWith({ dedupeFound: true, product: 'Loan Against Property', loanType: 'Property purchase', propertyGate: 'Yes', propertyType: 'Industrial' });
     expect(commercialStep.input(industrialCtx)).toMatchObject({ options: ['Godown', 'Factory', 'Warehouse', 'Plot'] });
 
-    const residentialCtx = ctxWith({ dedupeFound: true, product: 'Loan against property', loanType: 'Property purchase', propertyGate: 'Yes', propertyType: 'Residential' });
+    const residentialCtx = ctxWith({ dedupeFound: true, product: 'Loan Against Property', loanType: 'Property purchase', propertyGate: 'Yes', propertyType: 'Residential' });
     expect(commercialStep.input(residentialCtx)).toMatchObject({ options: ['Apartment/Flat', 'Bunglow', 'Rowhouse', 'Plot'] });
   });
 
   it('never asks propertyType/occupancy when the property has not yet been identified', () => {
-    const ctx = ctxWith({ dedupeFound: true, product: 'Loan against property', loanType: 'Property purchase', propertyGate: 'No' });
+    const ctx = ctxWith({ dedupeFound: true, product: 'Loan Against Property', loanType: 'Property purchase', propertyGate: 'No' });
     const path = applicablePath(homeLoanFlow, ctx).map((s) => s.id);
     expect(path).not.toContain('propertyType');
     expect(path).not.toContain('occupancy');

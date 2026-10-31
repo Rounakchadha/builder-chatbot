@@ -93,7 +93,7 @@ function mapLoanType(loanType: string): string {
   // and was verified working too, but isn't wired in — no top-up option exists anywhere in this
   // flow for the customer to actually choose it (2026-10-21 instruction: "topup is not an option").
   if (loanType.includes('Balance transfer')) return 'loan_takeover';
-  if (loanType === 'Loan against property (LAP)') return 'lap';
+  if (loanType === 'Loan Against Property (LAP)') return 'lap';
   return 'fresh'; // 'Fresh purchase' or 'Property purchase'
 }
 
@@ -103,7 +103,7 @@ function mapLoanType(loanType: string): string {
  * returned an RM — see goldLoan.service.ts/businessLoan.service.ts, now updated to use this too). */
 export const PRODUCT_CODE: Record<string, string> = {
   'Home loan': 'HL',
-  'Loan against property': 'LAP',
+  'Loan Against Property': 'LAP',
   'Loan Against Securities': 'LAS',
   'Gold Loan': 'GL',
   'Personal Loan': 'PL',

@@ -25,7 +25,7 @@ describe('computeEligibility', () => {
 
   it('uses a 15-year tenure and higher base rate for loan against property vs 20-year home loan', () => {
     const homeLoan = computeEligibility({ segment: 'Salaried', product: 'Home loan', income: 100000, emi: 0 });
-    const lap = computeEligibility({ segment: 'Salaried', product: 'Loan against property', income: 100000, emi: 0 });
+    const lap = computeEligibility({ segment: 'Salaried', product: 'Loan Against Property', income: 100000, emi: 0 });
     expect(homeLoan.tenureYears).toBe(20);
     expect(lap.tenureYears).toBe(15);
   });
