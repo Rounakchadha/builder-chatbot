@@ -27,6 +27,7 @@ import fullertonLogo from './assets/lenders/fullerton.svg';
 import ltHousingLogo from './assets/lenders/lt-housing-finance.png';
 import aadharHousingLogo from './assets/lenders/aadhar-housing-finance.jpg';
 import muthootLogo from './assets/lenders/muthoot-finance.png';
+import karurVysyaLogo from './assets/lenders/karur-vysya-bank.svg';
 
 function initials(name: string): string {
   const letters = name.split(' ').map((w) => w[0]).join('').slice(0, 2).toUpperCase();
@@ -66,6 +67,19 @@ const LENDER_LOGOS: Record<string, string> = {
   'ICICI Bank': iciciLogo,
   'ICICI HFC': iciciLogo,
   'SBI Home Loans': sbiLogo,
+  // Confirmed 2026-10-31 that Home Loan's own HL_LENDER_DISPLAY_NAME map (used for our own BRE
+  // comparison against the exact same real lender, homeLoanEligibility.service.ts) spells this one
+  // 'State Bank of India', not 'SBI Home Loans' — the real getcustomeroffers chain apparently uses
+  // that full name too, which never matched the only key that existed here, so it silently fell
+  // back to the initials circle instead of the real logo. 'SBI' added too as a cheap extra guard in
+  // case a shorter form shows up somewhere.
+  'State Bank of India': sbiLogo,
+  'SBI': sbiLogo,
+  // Karur Vysya — had no logo asset or map entry at all before 2026-10-31 (same report); same
+  // HL_LENDER_DISPLAY_NAME map confirms the real display name is exactly 'Karur Vysya'. Logo
+  // sourced from the bank's own Wikipedia infobox image, same precedent as the other logos above.
+  'Karur Vysya': karurVysyaLogo,
+  'Karur Vysya Bank': karurVysyaLogo,
   'Axis Bank': axisLogo,
   'Kotak Mahindra Bank': kotakLogo,
   'Kotak Bank': kotakLogo,

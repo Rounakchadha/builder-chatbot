@@ -257,6 +257,12 @@ function buildProfileSummary(ctx: StepContext): string {
   if (a.propertyValue) lines.push(`<strong>Property value:</strong> ₹${Number(a.propertyValue).toLocaleString('en-IN')}`);
   if (a.collateralType) lines.push(`<strong>Collateral type:</strong> ${a.collateralType}`);
   if (a.occupancy) lines.push(`<strong>Occupancy:</strong> ${a.occupancy}`);
+  // Property not yet identified (propertyGate === 'Not yet') means none of the three rows above
+  // ever get asked/shown — without an explicit line here the summary just silently said nothing
+  // about the property at all (2026-10-31 direct instruction: flag this case explicitly).
+  if (a.propertyGate === 'Not yet' && !propertyAlreadyIdentified(a)) {
+    lines.push(`<strong>Property identified:</strong> Not yet`);
+  }
 
   return `Here's what I've got so far:<br>${lines.join('<br>')}<br><br>Let me check your eligibility across lenders now.`;
 }
@@ -1515,7 +1521,9 @@ export const homeLoanFlow: FlowDefinition = {
       progressLabel: 'Financial details',
       isApplicable: (ctx) => isEligibilityIntent(ctx.answers) && isHomeLoanOrLap(ctx.answers) && isIndividualPan(ctx.answers.pan as string | undefined),
       botMessage: () => "What's your monthly income?",
-      hint: () => 'Net take-home, or average monthly income if self-employed.',
+      // Segment is already known by this step (asked earlier) — no need to hedge with "or... if
+      // self-employed" when we can just say the one that actually applies (2026-10-31 instruction).
+      hint: (ctx) => (ctx.answers.segment === 'Salaried' ? 'Net take-home.' : 'Average monthly income.'),
       input: () => ({ type: 'number', placeholder: 'e.g. 85000, or 1.2 lakh' }),
       validate: (value) => {
         const v = parseAmount(value);

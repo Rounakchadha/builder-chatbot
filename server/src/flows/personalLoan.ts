@@ -273,7 +273,9 @@ export const personalLoanSteps: StepDefinition[] = [
     progressLabel: 'Personal Loan',
     isApplicable: (ctx) => isPersonalLoan(ctx) && !isNonSalariedSegment(ctx),
     botMessage: () => "What's your monthly income?",
-    hint: () => 'Net take-home, or average monthly income if self-employed.',
+    // Salaried-only by this point (isApplicable excludes non-salaried segments) — no need to hedge
+    // with "or average monthly income if self-employed" for a case that can't happen here.
+    hint: () => 'Net take-home.',
     input: () => ({ type: 'number', placeholder: 'e.g. 60000' }),
     validate: (value) => {
       const v = parseAmount(value);
