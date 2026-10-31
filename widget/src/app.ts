@@ -128,6 +128,11 @@ export class ChatWidget {
   private sessionToken: string | null = null;
   private started = false;
   private resultCardShown = false;
+  /** The currently-live set of choice "quick reply" pills in the chat log (see
+   * renderChoiceComposer) — tracked so an earlier, unanswered question's buttons get disabled the
+   * moment a newer one renders, instead of staying clickable and silently submitting a stale
+   * answer against whatever step the conversation has since moved past. */
+  private activeChoiceEl: HTMLElement | null = null;
   /** See scrollToResultTop's and typeOutBubble's own doc comments — lets a definitive "scroll to
    * here" moment (the result card arriving) cancel a bot-reply typing animation's own per-frame
    * scroll-following still in flight, instead of the two fighting over where the view ends up. */
@@ -1206,18 +1211,35 @@ export class ChatWidget {
    * copied verbatim from CIS's design deliverables — see style.css's CIS component CSS block,
    * appended 2026-10-28 (the `layout` row/column distinction no longer applies — CIS always stacks
    * options in a single column). */
+  /** Renders choice options as quick-reply pills INSIDE the chat log, right under the bot's own
+   * question bubble — not in the separate composer panel below (2026-10-31 direct instruction:
+   * "they are outside the chatbot... move these buttons inside the chatbot like the bot itself is
+   * giving these options", plus making them visually pill-shaped and more compact). An earlier
+   * still-unanswered question's pills (if the customer never clicked one before a new question
+   * somehow rendered) are disabled rather than removed, so the chat history stays intact but can't
+   * submit a stale answer against a step the conversation has already moved past. */
   private renderChoiceComposer(stepId: string, options: string[], _layout: 'row' | 'column') {
+    if (this.activeChoiceEl) {
+      this.activeChoiceEl.querySelectorAll<HTMLButtonElement>('button').forEach((b) => (b.disabled = true));
+    }
+    const wasNearBottom = this.isNearBottom();
     const wrap = document.createElement('div');
-    wrap.className = 'la-options';
+    wrap.className = 'la-chat-options';
     for (const option of options) {
       const btn = document.createElement('button');
-      btn.className = 'la-option';
+      btn.className = 'la-chat-option';
       btn.type = 'button';
       btn.textContent = option;
-      btn.onclick = () => this.submitUserValue(stepId, option, option);
+      btn.onclick = () => {
+        wrap.querySelectorAll<HTMLButtonElement>('button').forEach((b) => (b.disabled = true));
+        if (this.activeChoiceEl === wrap) this.activeChoiceEl = null;
+        this.submitUserValue(stepId, option, option);
+      };
       wrap.appendChild(btn);
     }
-    this.composerEl.appendChild(wrap);
+    this.chatLogEl.appendChild(wrap);
+    this.activeChoiceEl = wrap;
+    this.scrollDownIfPinned(wasNearBottom);
   }
 
   /** Type-to-search against a large server-side list (e.g. the employer master) — debounced search
@@ -1317,6 +1339,7 @@ export class ChatWidget {
     this.panOfferNeedsMobile = false;
     this.panOfferResolved = null;
     this.statusActionsShown = false;
+    this.activeChoiceEl = null;
     this.chatLogEl.innerHTML = '';
     this.clearComposer();
     try {
@@ -1654,6 +1677,7 @@ export class ChatWidget {
       if (err instanceof SessionExpiredError) {
         safeRemoveItem(STORAGE_KEY);
         this.sessionToken = null;
+        this.activeChoiceEl = null;
         this.chatLogEl.innerHTML = '';
         return this.start();
       }
@@ -1729,6 +1753,7 @@ export class ChatWidget {
     this.panOfferNeedsMobile = false;
     this.panOfferResolved = null;
     this.statusActionsShown = false;
+    this.activeChoiceEl = null;
     this.chatLogEl.innerHTML = '';
     if (this.progressStepEl) this.progressStepEl.textContent = 'GETTING STARTED';
     if (this.progressPctEl) this.progressPctEl.textContent = '0% complete';
