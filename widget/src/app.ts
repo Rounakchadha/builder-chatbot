@@ -843,6 +843,21 @@ export class ChatWidget {
     });
   }
 
+  /** General fix for a recurring class of bug (2026-10-31: "when im selecting the loan offer and
+   * the thank u msg is coming the screen is going somewhere randomly... have to scroll down to it
+   * why is this happening again and again"): any click handler below that rewrites part of the
+   * result card — an offer selected, Gold Loan submitted, either one failing — shrinks or shifts
+   * the surrounding content, but the browser never adjusts the customer's current scroll position
+   * to match. If they were scrolled to where the button they just clicked used to be, that spot may
+   * now be blank space once the content above/around it collapses. Call this with whatever element
+   * just appeared/changed, right after every such mutation, not just the ones already reported —
+   * the whole class of handler gets this, not one at a time as each one gets noticed. */
+  private scrollChangedContentIntoView(el: HTMLElement) {
+    requestAnimationFrame(() => {
+      el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    });
+  }
+
   /** "Select this offer" buttons on HL/LAP's lender-detail breakdown and Personal Loan's lender
    * cards (see resultCard.ts) — calls the real setbrefinanceroffertenure (2026-10-15, see
    * routes/chat.ts's select-offer endpoint). Personal Loan's real lead now already exists by this
@@ -862,7 +877,10 @@ export class ChatWidget {
         try {
           result = await this.api.selectOffer(this.sessionToken!, lenderName);
         } catch (err) {
-          if (slot) slot.innerHTML = `<div class="lc-gold-submit-confirmed">${describeApiError(err, "Couldn't select this offer right now — please try again shortly.")}</div>`;
+          if (slot) {
+            slot.innerHTML = `<div class="lc-gold-submit-confirmed">${describeApiError(err, "Couldn't select this offer right now — please try again shortly.")}</div>`;
+            this.scrollChangedContentIntoView(slot);
+          }
           return;
         }
         if (!slot) return;
@@ -880,6 +898,7 @@ export class ChatWidget {
               if (card !== plCard) card.style.display = 'none';
             });
             plCard.innerHTML = lenderThankYouHtml(lenderName, rmName);
+            this.scrollChangedContentIntoView(plCard);
           } else {
             // Home Loan/LAP: same "nothing else matters once one's picked" treatment as Personal
             // Loan — hide the "highest eligibility" summary and its label, and collapse the whole
@@ -890,10 +909,14 @@ export class ChatWidget {
             const lenderList = this.resultContainerEl.querySelector<HTMLElement>('#lc-lender-list');
             if (highestEligibility) highestEligibility.style.display = 'none';
             if (lenderListLabel) lenderListLabel.style.display = 'none';
-            if (lenderList) lenderList.innerHTML = lenderThankYouHtml(lenderName, rmName);
+            if (lenderList) {
+              lenderList.innerHTML = lenderThankYouHtml(lenderName, rmName);
+              this.scrollChangedContentIntoView(lenderList);
+            }
           }
         } else {
           slot.innerHTML = `<div class="lc-gold-submit-confirmed">Couldn't select this offer right now — please try again shortly.</div>`;
+          this.scrollChangedContentIntoView(slot);
         }
       };
     });
@@ -916,7 +939,10 @@ export class ChatWidget {
       try {
         result = await this.api.goldSubmit(this.sessionToken!);
       } catch (err) {
-        if (slot) slot.innerHTML = `<div class="lc-gold-submit-confirmed">${describeApiError(err, "Couldn't submit this application right now — please try again shortly.")}</div>`;
+        if (slot) {
+          slot.innerHTML = `<div class="lc-gold-submit-confirmed">${describeApiError(err, "Couldn't submit this application right now — please try again shortly.")}</div>`;
+          this.scrollChangedContentIntoView(slot);
+        }
         return;
       }
       if (!slot) return;
@@ -936,6 +962,7 @@ export class ChatWidget {
       } else {
         slot.innerHTML = `<div class="lc-gold-submit-confirmed">${result.message ?? "Couldn't submit this application right now — please try again shortly."}</div>`;
       }
+      this.scrollChangedContentIntoView(slot);
     };
   }
 
