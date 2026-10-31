@@ -70,6 +70,9 @@ const STORAGE_KEY = 'lc_session_token_v1';
 // verified; sent back on the next brand-new session so it can skip asking for both again, as
 // long as it's still within the remembered window.
 const IDENTITY_STORAGE_KEY = 'lc_identity_token_v1';
+// Must match style.css's la-message-arrive animation duration (.32s) — see appendBotBubble's own
+// doc comment for why the type-out effect waits this long before starting.
+const ARRIVAL_ANIMATION_MS = 320;
 const LOADING_LABEL: Record<string, string> = {
   dedupeCheck: 'Checking your details…',
   panFetch: 'Looking up your details…',
@@ -306,10 +309,20 @@ export class ChatWidget {
                  fix — "should open properly ... should have a slider from where i can close it").
                  Kept as direct siblings (not wrapped in CIS's own extra .la-details-content div) so
                  every existing .la-sidebar>... CSS rule for the fields below keeps matching. -->
-            <div class="la-sheet-handle" aria-hidden="true"></div>
+            <!-- Wrapped together (2026-10-31 fix: "ur details and cross button should stay static
+                 if i swipe down my details till the bottom") so the heading/subtext pin to the top
+                 of the sheet's own scroll area via position:sticky (mobile only) while just the
+                 fields list underneath scrolls — see .la-sheet-sticky-top's own CSS doc comment.
+                 The close button stays a sibling, not inside this wrapper: it's already
+                 position:absolute relative to .la-sidebar itself (unaffected by internal scroll
+                 either way), and keeping it out avoids fighting the wrapper's own z-index/background
+                 for no benefit. -->
+            <div class="la-sheet-sticky-top">
+              <div class="la-sheet-handle" aria-hidden="true"></div>
+              <h2 class="la-details-heading">Your details</h2>
+              <p class="la-details-subtext">Saved automatically as you go</p>
+            </div>
             <button type="button" class="la-details-close" aria-label="Close your details">${ICON.close}</button>
-            <h2 class="la-details-heading">Your details</h2>
-            <p class="la-details-subtext">Saved automatically as you go</p>
             <div class="la-sidebar-fields"></div>
             <p class="la-powered">Powered by finfinity</p>
             <!-- Real logo version of the header's "Powered by" badge, shown only at phone width —
@@ -359,21 +372,62 @@ export class ChatWidget {
     // bottom sheet, neither existed in our previous full-screen-overlay version (2026-10-30 fix).
     panel.querySelector<HTMLButtonElement>('.la-details-close')!.onclick = () => setSidebarOpen(false);
     panel.querySelector<HTMLButtonElement>('.la-details-scrim')!.onclick = () => setSidebarOpen(false);
-    // Drag-handle swipe-to-close — matches CIS's own real gesture exactly (confirmed from its live
-    // source): not a live-follows-your-finger drag, just "pointer went down, then came back up more
-    // than 50px lower" closes the sheet.
+    // Drag-handle swipe-to-close. Previously matched CIS's own gesture literally — "pointer went
+    // down, then came back up more than 50px lower" — but that's just a binary open/closed check
+    // with NO visual feedback while dragging; the sheet only ever snapped, never actually followed
+    // the finger (2026-10-31 report: "its just open and closing not smoothly going down with
+    // touch"). Now the sheet's own translateY tracks the pointer in real time while dragging
+    // (transition disabled so it isn't laggy), then animates the rest of the way closed or snaps
+    // back open on release depending on how far it was dragged.
     const handleEl = panel.querySelector<HTMLElement>('.la-sheet-handle')!;
+    const DRAG_CLOSE_THRESHOLD_PX = 90;
     let dragStartY: number | null = null;
+    const closeSheetWithDragAnimation = () => {
+      sidebarEl.style.transition = 'transform .22s cubic-bezier(.2,.8,.2,1)';
+      sidebarEl.style.transform = 'translateY(100%)';
+      sidebarEl.addEventListener(
+        'transitionend',
+        () => {
+          sidebarEl.style.transition = '';
+          sidebarEl.style.transform = '';
+          setSidebarOpen(false);
+        },
+        { once: true },
+      );
+    };
+    const snapSheetBackOpen = () => {
+      sidebarEl.style.transition = 'transform .2s cubic-bezier(.2,.8,.2,1)';
+      sidebarEl.style.transform = 'translateY(0)';
+      sidebarEl.addEventListener(
+        'transitionend',
+        () => {
+          sidebarEl.style.transition = '';
+          sidebarEl.style.transform = '';
+        },
+        { once: true },
+      );
+    };
     handleEl.addEventListener('pointerdown', (e) => {
       dragStartY = e.clientY;
+      sidebarEl.style.transition = 'none'; // follow the finger with no lag while dragging
       handleEl.setPointerCapture(e.pointerId);
     });
+    handleEl.addEventListener('pointermove', (e) => {
+      if (dragStartY === null) return;
+      const delta = Math.max(0, e.clientY - dragStartY); // never drag "up" past fully open
+      sidebarEl.style.transform = `translateY(${delta}px)`;
+    });
     handleEl.addEventListener('pointerup', (e) => {
-      if (dragStartY !== null && e.clientY - dragStartY > 50) setSidebarOpen(false);
+      if (dragStartY === null) return;
+      const delta = e.clientY - dragStartY;
       dragStartY = null;
+      if (delta > DRAG_CLOSE_THRESHOLD_PX) closeSheetWithDragAnimation();
+      else snapSheetBackOpen();
     });
     handleEl.addEventListener('pointercancel', () => {
+      if (dragStartY === null) return;
       dragStartY = null;
+      snapSheetBackOpen();
     });
 
     this.panelEl = panel;
@@ -587,7 +641,18 @@ export class ChatWidget {
     // the animation finishes so GPU layers don't pile up across a long conversation.
     row.addEventListener('animationend', () => row.classList.remove('is-new'), { once: true });
     const bubble = row.querySelector<HTMLElement>('.la-bubble');
-    if (bubble) this.typeOutBubble(bubble, wasNearBottom);
+    if (bubble) {
+      // Bug fixed 2026-10-31 (mobile report: "the text... is flickering... doesn't look polished"):
+      // typeOutBubble used to start the instant the bubble was appended, running at the same time as
+      // the .is-new arrival animation (fade + slide-up) on the SAME element for its first 320ms —
+      // rapidly mutating text nodes inside an element mid compositing-animation is exactly the kind
+      // of thing that janks/flickers on weaker mobile GPUs. Waiting for the arrival to visually
+      // settle first (ARRIVAL_ANIMATION_MS, kept in sync with style.css's la-message-arrive
+      // duration) before starting the type-out fixes that; a plain setTimeout rather than this row's
+      // own 'animationend' event, since prefers-reduced-motion disables the animation entirely (no
+      // animationend would ever fire) but typing should still happen either way.
+      setTimeout(() => this.typeOutBubble(bubble, wasNearBottom), ARRIVAL_ANIMATION_MS);
+    }
   }
 
   /** Makes a bot bubble feel typed rather than dumped on screen instantly (2026-10-31 direct
