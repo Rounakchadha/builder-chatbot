@@ -1297,7 +1297,7 @@
    "make the minimize and show eligibility buttons bigger and pill like"). Sized and styled to match
    the other pill buttons already established (.la-secondary/.lc-ghost-btn) instead of CIS's own
    plain-text-link treatment for this specific state (no CIS design was ever captured for it). */
-.lc-min-bar{display:flex;align-items:center;gap:8px;margin:0 0 14px;border:1px solid #D9C7A4;border-radius:100px;background:var(--la-card);color:var(--la-ink);padding:10px 22px;min-height:44px;font:500 13px var(--sans);cursor:pointer}
+.lc-min-bar{display:flex;align-items:center;justify-content:center;gap:8px;width:fit-content;margin:0 0 14px;border:1px solid #D9C7A4;border-radius:100px;background:var(--la-card);color:var(--la-ink);padding:10px 22px;min-height:44px;font:500 13px var(--sans);cursor:pointer}
 .lc-min-bar:hover{border-color:var(--la-gold);background:var(--la-soft)}
 .lc-min-bar svg{width:16px;height:16px;flex:none}
 .lc-result-pill{display:flex;align-items:center;gap:10px;border:1px solid #D9C7A4;border-radius:100px;background:var(--la-card);color:var(--la-ink);padding:12px 22px;min-height:48px;font:500 13px var(--sans);text-align:left;cursor:pointer}

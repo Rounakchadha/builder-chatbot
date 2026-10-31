@@ -428,7 +428,12 @@ export function renderResultCard(result: EligibilityResultPayload): string {
     <section id="lc-result-expanded" class="la-results">
       <div class="la-tag">Eligibility check complete</div>
       <h2>Your loan eligibility</h2>
-      <button class="la-link" id="lc-btn-minimize" type="button" aria-label="Minimize" aria-expanded="true">Minimize</button>
+      <!-- CIS's own captured design used a plain underlined text link (.la-link) here — changed to
+           the same big pill style as the not-eligible card's minimize button per direct instruction
+           (2026-10-31: "this minimise button dawg"), for a bigger, more visible toggle. No icon
+           (unlike .lc-min-bar's other use) — wireResultMinimize's toggle sets this button's
+           textContent directly on every click, which would silently wipe out an inline icon. -->
+      <button class="lc-min-bar" id="lc-btn-minimize" type="button" aria-label="Minimize" aria-expanded="true">Minimize</button>
       ${
         best && headlineLakh !== undefined
           ? `<div class="la-estimate" id="lc-highest-eligibility">
