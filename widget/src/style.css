@@ -1129,6 +1129,26 @@
 .lc-typing span:nth-child(2){animation-delay:.15s !important}
 .lc-typing span:nth-child(3){animation-delay:.3s !important}
 
+/* Smooth ChatGPT-style streaming cursor */
+.lc-typing-cursor{
+  display: inline-block !important;
+  width: 2px !important;
+  height: 1.1em !important;
+  vertical-align: -0.15em !important;
+  margin-left: 2px !important;
+  background: var(--la-gold, #c9a96e) !important;
+  border-radius: 1px !important;
+  animation: lc-cursor-blink 0.75s ease-in-out infinite !important;
+}
+@keyframes lc-cursor-blink{
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.15; }
+}
+.lc-root.is-dark .lc-typing-cursor,
+.lc-panel.is-dark .lc-typing-cursor{
+  background: #E0BD70 !important;
+}
+
 .lc-root.is-dark .la-message.is-user .la-bubble{background:#33312B !important;border-color:#5B5140 !important}
 .lc-root.is-dark .la-message:not(.is-user) .la-bubble:before{background:linear-gradient(180deg,#DABB74,#A58B55 50%,#4B4537) !important}
 
@@ -1325,7 +1345,7 @@
    personalLoanLenderCardHtml in resultCard.ts) had ZERO CSS at all — never migrated during the CIS
    reskin, so they rendered as bare centered text (2026-10-30 direct instruction). Matches the
    already-established .la-lender/.la-bank-icon/.la-amount/.la-result-grid/.la-primary language. */
-.lc-gold-submit-card{display:block;width:100%;text-align:left;border:1px solid var(--la-line);border-radius:12px;background:var(--la-card);padding:20px;margin:14px 0;cursor:pointer;transition:border-color .15s ease,box-shadow .15s ease}
+.lc-gold-submit-card{position:relative;display:block;width:100%;text-align:left;border:1px solid var(--la-line);border-radius:12px;background:var(--la-card);padding:20px;margin:14px 0;cursor:pointer;transition:border-color .15s ease,box-shadow .15s ease}
 .lc-gold-submit-card:hover{border-color:var(--la-gold);box-shadow:0 4px 14px rgba(128,91,24,.1)}
 .lc-gold-submit-card:active{transform:translateY(1px)}
 .lc-pl-lender-card{cursor:default}
@@ -1334,7 +1354,14 @@
 .lc-gold-submit-logo{position:relative;width:56px;height:36px;display:grid;place-items:center;border:1px solid var(--la-line);border-radius:8px;background:#fff;overflow:hidden;padding:4px;flex:none}
 .lc-gold-submit-logo img{position:absolute;inset:4px;width:calc(100% - 8px)!important;height:calc(100% - 8px)!important;max-width:none!important;object-fit:contain;object-position:center}
 .lc-gold-submit-lender{flex:1;min-width:0;font-size:14px;font-weight:600;color:var(--la-ink)}
-.lc-best-tag{display:inline-block;flex:none;font-size:9px;font-weight:600;letter-spacing:.02em;text-transform:uppercase;padding:3px 8px;border-radius:100px;background:var(--la-soft);color:var(--la-gold)}
+/* Was a flex child of .lc-gold-submit-top, whose lender-name sibling has flex:1 — on a wide
+   (desktop) card that stretched this tag all the way to the far-right edge of the row, isolated
+   and visually disconnected from the logo/lender name it actually describes (2026-11-02 report:
+   "the muthoot gold loan card is a little not aligned"). Anchored to the card's own top-right
+   corner instead — the same position:absolute pattern .lc-pl-best-tag already uses for the
+   "Best offer" tag elsewhere in this app — so it reads as a corner badge on the card, not a
+   stray element floating at the end of a flex row. */
+.lc-best-tag{position:absolute;top:16px;right:20px;display:inline-block;font-size:9px;font-weight:600;letter-spacing:.02em;text-transform:uppercase;padding:3px 8px;border-radius:100px;background:var(--la-soft);color:var(--la-gold)}
 .lc-gold-submit-main{margin-bottom:16px}
 .lc-gold-submit-amount{font:400 28px/1.2 var(--serif);color:var(--la-gold)}
 .lc-gold-submit-rate{font-size:12.5px;color:var(--la-muted);margin-top:2px}

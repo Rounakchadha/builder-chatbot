@@ -141,7 +141,13 @@ export const goldLoanSteps: StepDefinition[] = [
     botMessage: () => "What's the gross weight, in grams?",
     input: () => ({ type: 'number', placeholder: 'e.g. 50' }),
     validate: (value) => {
-      const v = Number(value);
+      // Bug fixed 2026-11-02 (direct instruction: typing "1 gm" instead of a bare "1" should still
+      // work) — plain Number(value) returns NaN for anything with trailing text (a unit, "gms",
+      // "grams", etc.), rejecting an otherwise perfectly clear answer. Extracts the leading numeric
+      // portion instead, same spirit as parseAmount.ts's unit-shorthand handling elsewhere in this
+      // flow, just for a weight rather than a currency amount.
+      const match = (value ?? '').match(/[\d.]+/);
+      const v = match ? Number(match[0]) : NaN;
       if (!Number.isFinite(v) || v <= 0 || v > 10_000) return { ok: false, error: 'Enter the gross weight in grams, e.g. 50.' };
       return { ok: true, parsed: v };
     },
