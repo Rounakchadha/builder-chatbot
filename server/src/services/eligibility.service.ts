@@ -109,10 +109,11 @@ function toTitleCaseSpaced(value: string): string {
  * filter/collateral_type ALL need to be in THIS request body directly (not just synced onto the
  * lead beforehand via updatelead). Confirmed live: sending these (even with collateral_type as a
  * blank string) returns a full, real 20-lender offer list with zero crash — reproduced on a fresh
- * lead end-to-end. Most of these fields (ownership, secure_loan, company_type, builder_name,
- * corporate_name) have no real collected-data source in this flow yet and are sent as fixed
- * individual-applicant defaults; swap them for real values if/when this flow ever supports
- * non-individual or company-owned-property applicants. */
+ * lead end-to-end. Most of these fields (ownership, secure_loan, builder_name, corporate_name)
+ * have no real collected-data source in this flow yet and are sent as fixed individual-applicant
+ * defaults; swap them for real values if/when this flow ever supports non-individual or
+ * company-owned-property applicants. company_type is the one exception — see its own doc comment
+ * below (2026-11-02 fix for self-employed Home Loan applicants showing no eligibility). */
 class RealEligibilityService implements EligibilityService {
   async evaluate(input: EligibilityInput): Promise<EligibilityResult> {
     if (!input.leadId) {
@@ -126,7 +127,6 @@ class RealEligibilityService implements EligibilityService {
         product_code: input.productCode,
         ownership: 'Individual',
         secure_loan: 'No',
-        company_type: '',
         occupancy_type: input.occupancy ? toTitleCaseSpaced(input.occupancy) : '',
         // Construction status, not collected in this flow yet — "Ready to Move" is the common
         // default and what both confirmed-working live examples used.
@@ -137,6 +137,15 @@ class RealEligibilityService implements EligibilityService {
         campaign_code: 'anacity',
         filter: {},
         collateral_type: '',
+        // Fixed 2026-11-02 (user report: self-employed Home Loan applicants were showing no
+        // eligibility at all) — this was hardcoded blank for EVERY applicant, salaried or not. Home
+        // Loan only ever reaches this point for an individual PAN (entity PANs are rejected earlier
+        // — see isIndividualPan/entityNotSupported in homeLoan.ts), so a non-salaried applicant here
+        // is, by definition, running their business as a sole proprietorship under their own PAN,
+        // not a registered company — same "individual PAN -> Proprietorship" rule businessLoan.ts
+        // already uses (blPanEntityClassify). Left blank for Salaried, where no company exists at
+        // all and the field presumably doesn't apply.
+        company_type: input.segment === 'Salaried' ? '' : 'Proprietorship',
       },
       { token: input.token },
     );
