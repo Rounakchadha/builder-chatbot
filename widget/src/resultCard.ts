@@ -192,15 +192,20 @@ function goldSubmitCardHtml(best: LenderOffer, isEstimate?: boolean): string {
         <div class="lc-gold-submit-lender">${best.name}</div>
         ${isEstimate ? '<span class="lc-best-tag">Estimate</span>' : ''}
       </div>
+      <!-- Submit button moved onto the same line as the amount (2026-11-02 direct instruction —
+           was its own centered line below the stats grid, which read as floating far away from
+           the amount it's actually tied to). -->
       <div class="lc-gold-submit-main">
-        <div class="lc-gold-submit-amount">Upto ${formatAmount(best.amountLakh, 'full')}</div>
-        <div class="lc-gold-submit-rate">Starting ${best.rate}%</div>
+        <div class="lc-gold-submit-amount-block">
+          <div class="lc-gold-submit-amount">Upto ${formatAmount(best.amountLakh, 'full')}</div>
+          <div class="lc-gold-submit-rate">Starting ${best.rate}%</div>
+        </div>
+        <div class="lc-gold-submit-cta">Submit to ${best.name}</div>
       </div>
       <div class="lc-gold-submit-grid">
         <div class="lc-gold-stat"><span class="lc-gold-stat-k">Tenure:</span><span class="lc-gold-stat-v">${best.tenureYears * 12} months</span></div>
         <div class="lc-gold-stat"><span class="lc-gold-stat-k">Fees:</span><span class="lc-gold-stat-v">0.25% to 2%</span></div>
       </div>
-      <div class="lc-gold-submit-cta">Submit to ${best.name}</div>
       ${isEstimate ? '<div class="lc-gold-submit-estimate-note">Based on the gold details you provided — your final amount and rate are confirmed after physical verification.</div>' : ''}
     </button>`;
 }

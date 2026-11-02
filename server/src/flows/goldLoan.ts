@@ -55,15 +55,6 @@ export function buildGoldLoanRmDetails(ctx: StepContext): Array<{ label: string;
 // single-entry list, it just produces one offer instead of several to pick a "best" from.
 const GOLD_LENDERS = ['Muthoot Finance'];
 
-// Approximate ₹/gram by purity, for a believable mock cap — not real gold-rate data.
-const PURITY_RATE_PER_GRAM: Record<string, number> = {
-  '24k': 7000,
-  '22k': 6400,
-  '20k': 5800,
-  '18k': 5250,
-  'Not sure': 5000,
-};
-
 function isGoldLoan(ctx: StepContext): boolean {
   return ctx.answers.product === 'Gold Loan';
 }
@@ -181,15 +172,15 @@ export const goldLoanSteps: StepDefinition[] = [
     },
     input: () => ({ type: 'none' }),
     onAnswer: (_parsed, ctx): { resultPayload: EligibilityResultPayload } => {
-      const requestedLakh = Number(ctx.answers.glLoanAmount) / 100_000;
-      const weight = Number(ctx.answers.glGrossWeight) || 0;
-      const rate = PURITY_RATE_PER_GRAM[ctx.answers.glPurity as string] ?? PURITY_RATE_PER_GRAM['Not sure'];
-      const goldValueLakh = (weight * rate) / 100_000;
-      const ltvCappedLakh = goldValueLakh * 0.75; // typical gold-loan LTV ceiling
-      const cappedRequestLakh = Math.min(requestedLakh, ltvCappedLakh);
-
+      // Fixed cap instead of the old weight x purity x LTV estimate (2026-11-02 direct instruction:
+      // "muthooth mein dont caluclate estimate just say upto 5 lakhs") — Muthoot's real eligibility
+      // depends entirely on their own physical gold verification anyway, so a precise-looking
+      // computed number (from a placeholder per-gram rate, not today's real gold rate) was more
+      // misleading than a plain flat cap. glGrossWeight/glPurity are still collected — real,
+      // useful details for Muthoot's own verification — just no longer used to compute this number.
+      const GOLD_LOAN_FIXED_CAP_LAKH = 5;
       const seedKey = (ctx.answers.mobile as string) || ctx.conversationId;
-      const offers = mockOffersForAmount(cappedRequestLakh, GOLD_LENDERS, seedKey, 10.5, 3);
+      const offers = mockOffersForAmount(GOLD_LOAN_FIXED_CAP_LAKH, GOLD_LENDERS, seedKey, 10.5, 3);
       // The real lead (and real RM) already exist by this point — glCreateLead runs the moment
       // this branch was entered, same as every other product now does (2026-10-21). Only the
       // Muthoot-specific attach+submit is still deferred to the explicit "Submit to Muthoot" click.

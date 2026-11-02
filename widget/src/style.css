@@ -1362,14 +1362,21 @@
    "Best offer" tag elsewhere in this app — so it reads as a corner badge on the card, not a
    stray element floating at the end of a flex row. */
 .lc-best-tag{position:absolute;top:16px;right:20px;display:inline-block;font-size:9px;font-weight:600;letter-spacing:.02em;text-transform:uppercase;padding:3px 8px;border-radius:100px;background:var(--la-soft);color:var(--la-gold)}
-.lc-gold-submit-main{margin-bottom:16px}
+/* .lc-gold-submit-main is now a row (2026-11-02 direct instruction) — the amount block on the
+   left, the submit button on the right on the SAME line, instead of the button sitting on its own
+   centered line below the stats grid (read as floating far from the amount it's tied to). */
+.lc-gold-submit-main{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:16px}
 .lc-gold-submit-amount{font:400 28px/1.2 var(--serif);color:var(--la-gold)}
 .lc-gold-submit-rate{font-size:12.5px;color:var(--la-muted);margin-top:2px}
 .lc-gold-submit-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;border-top:1px solid var(--la-line);padding-top:14px;margin-bottom:16px}
 .lc-gold-stat{display:flex;flex-direction:column;gap:2px}
-.lc-gold-stat-k{font-size:10px;color:var(--la-muted);text-transform:uppercase;letter-spacing:.02em}
-.lc-gold-stat-v{font-size:13px;font-weight:500;color:var(--la-ink)}
-.lc-gold-submit-cta{display:block;width:fit-content;max-width:100%;margin:16px auto 0;text-align:center;border-radius:100px;padding:10px 24px;min-height:42px;background:linear-gradient(180deg,#EBC569,#CCA13D);color:#211D17;font-weight:500;font-size:13px}
+/* Sizes bumped (2026-11-02 direct instruction) — 10px/13px -> 12px/16px. */
+.lc-gold-stat-k{font-size:12px;color:var(--la-muted);text-transform:uppercase;letter-spacing:.02em}
+.lc-gold-stat-v{font-size:16px;font-weight:500;color:var(--la-ink)}
+.lc-gold-submit-cta{display:block;flex:none;width:fit-content;max-width:100%;margin:0;text-align:center;border-radius:100px;padding:10px 24px;min-height:42px;background:linear-gradient(180deg,#EBC569,#CCA13D);color:#211D17;font-weight:500;font-size:13px}
+/* The large serif amount + the (fairly long) "Submit to X" button text don't comfortably fit on one
+   line at phone width — stacked back to a column there, button full-width underneath. */
+@media(max-width:700px){.lc-gold-submit-main{flex-direction:column;align-items:stretch;gap:12px}.lc-gold-submit-cta{width:100%}}
 .lc-gold-submit-card:hover .lc-gold-submit-cta{background:var(--la-gold);color:#fff}
 .lc-pl-lender-card .lc-gold-submit-cta{display:none}
 .lc-gold-submit-estimate-note{font-size:11px;line-height:1.5;color:var(--la-muted);margin-top:12px}
