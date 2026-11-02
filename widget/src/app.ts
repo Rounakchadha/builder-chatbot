@@ -659,6 +659,16 @@ export class ChatWidget {
       // listener right above (removing the .is-new class, tearing down its will-change compositing
       // layer) — two unrelated style/DOM changes landing in the same frame is its own small source
       // of jank, separate from (and in addition to) the per-frame typing cost fixed below.
+      //
+      // Regression fixed 2026-11-02 ("the eligibility is again going to the bottom of the page"):
+      // typeOutBubble() used to reset suppressAutoScrollFollow to false itself, which was correct
+      // back when it ran synchronously — but once its start was delayed here, that reset started
+      // firing~340ms AFTER scrollToResultTop() (later in this same renderTurn pass) had already set
+      // it true, silently cancelling the suppression right as the typing animation's per-frame
+      // scroll-follow kicked in. Reset it HERE instead, synchronously, at the same point in time
+      // appendBotBubble always ran at before — so if scrollToResultTop runs later in this turn, its
+      // "true" is guaranteed to be the last word, exactly like before this delay existed.
+      this.suppressAutoScrollFollow = false;
       setTimeout(() => this.typeOutBubble(bubble, wasNearBottom), ARRIVAL_ANIMATION_MS + 20);
     }
   }
@@ -678,9 +688,9 @@ export class ChatWidget {
     // within the same synchronous renderTurn pass), those later frames kept re-forcing the view back
     // to the absolute bottom (the RM card) every ~16ms, overriding scrollToResultTop's one-time
     // correction almost as soon as it landed — the customer ended up at the bottom regardless.
-    // Reset at the start of every new bubble's typing so a normal reply (never followed by a result)
-    // keeps smoothly following its own growth as before; scrollToResultTop flips it back on.
-    this.suppressAutoScrollFollow = false;
+    // suppressAutoScrollFollow is reset in appendBotBubble, synchronously, BEFORE this function's
+    // own (delayed) call — see that reset's own comment for why it can't live here anymore now that
+    // typing starts on a delay instead of immediately.
     const walker = document.createTreeWalker(bubble, NodeFilter.SHOW_TEXT);
     const textNodes: Text[] = [];
     let full = '';
