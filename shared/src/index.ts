@@ -151,6 +151,14 @@ export const ChatMessageRequest = z.object({
   // Only read when starting a brand-new session (no sessionToken) — see identity.service.ts.
   // Lets a customer re-checking eligibility within the remembered window skip mobile+OTP entirely.
   identityToken: z.string().max(128).optional(),
+  // Only read when starting a brand-new session (no sessionToken) — see launchToken.service.ts.
+  // Minted locally by a partner's own backend (no API call to us) so the widget can open with
+  // product/mobile/email/name prefilled, without re-asking what the partner's app already knows.
+  // OTP and PAN still run normally — this only saves retyping, never skips verification.
+  // Bug fixed 2026-11-03: this was capped at 128 chars, which a realistic token (long product name
+  // + full name + email, all 4 fields CIS actually sends) can exceed — measured ~280 chars worst
+  // case. 400 leaves real headroom without being unbounded.
+  launchToken: z.string().max(400).optional(),
 });
 export type ChatMessageRequest = z.infer<typeof ChatMessageRequest>;
 
@@ -205,4 +213,9 @@ export interface EligibilityResultPayload {
    * (from the PAN lookup) puts them under 18. There was no minimum-age check at all before this —
    * `eligible` is always false and no lead is created. See flows/homeLoan.ts's computeResultPayload. */
   underageNotSupported?: boolean;
+  /** Set once the customer has actually picked one lender's offer (POST /api/chat/select-offer) —
+   * lets the widget re-render straight into the "you're all set with X" state on a fresh page load
+   * instead of showing the full lender list again and asking them to pick once more (bug found
+   * 2026-11-02: this used to be pure client-side DOM state, lost on every reload). */
+  selectedLenderName?: string;
 }

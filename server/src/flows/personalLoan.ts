@@ -9,12 +9,36 @@ import { personalLoanFinancerService, type PlFinancerLenderEntry, type PlLenderC
 import { calcAge } from './homeLoan';
 import { pickRm } from './rm';
 import { ensureLeadOnce, type LeadSyncResult } from '../services/lead.service';
+import { sendLeadCreatedWebhook } from '../services/webhook.service';
 import { maskPan } from '../lib/crypto';
 import { prisma } from '../lib/prisma';
 import { Prisma } from '@prisma/client';
 import { logger } from '../lib/logger';
 
 const EMPLOYER_OTHER = 'Others';
+
+/** plLoanAmount/plIncome are both asked before either lead-creation step below runs — fire CIS's
+ * webhook here, with the full picture, instead of generically at lead-creation time (2026-11-06:
+ * fire once all the relevant info for this product is in hand). Shared by plCreateLeadEarly and
+ * plCreateLead — isApplicable on both makes them mutually exclusive per conversation, so this never
+ * fires twice for the same lead. */
+function firePlWebhook(ctx: StepContext, leadResult: LeadSyncResult): void {
+  if (!leadResult.builderLeadId || leadResult.reused) return;
+  void sendLeadCreatedWebhook({
+    leadId: leadResult.builderLeadId,
+    name: ctx.answers.name as string | undefined,
+    mobile: ctx.answers.mobile as string | undefined,
+    email: ctx.answers.email as string | undefined,
+    pan: ctx.answers.pan as string | undefined,
+    product: 'Personal Loan',
+    loanType: 'Personal Loan',
+    segment: ctx.answers.segment as string | undefined,
+    pincode: ctx.answers.pincode as string | undefined,
+    city: ctx.answers.pincodeArea as string | undefined,
+    loanAmount: Number(ctx.answers.plLoanAmount) || undefined,
+    monthlyIncome: Number(ctx.answers.plIncome) || undefined,
+  });
+}
 
 // Security-review finding, 2026-10-23: no upper bound existed on loan amount or income — see
 // homeLoan.ts's MAX_SANE_MONTHLY_AMOUNT doc comment for the same reasoning, applied here.
@@ -353,6 +377,7 @@ export const personalLoanSteps: StepDefinition[] = [
         remoteCustomerId: ctx.answers.remoteCustomerId as number | undefined,
         token: ctx.answers.finfinityAccessToken as string | undefined,
       });
+      firePlWebhook(ctx, plLeadResult);
       return { plLeadResult };
     },
   },
@@ -422,6 +447,7 @@ export const personalLoanSteps: StepDefinition[] = [
         remoteCustomerId: ctx.answers.remoteCustomerId as number | undefined,
         token: ctx.answers.finfinityAccessToken as string | undefined,
       });
+      firePlWebhook(ctx, plLeadResult);
       return { plLeadResult };
     },
   },

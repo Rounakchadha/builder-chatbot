@@ -6,6 +6,7 @@ import { validateChoice } from '../lib/validateChoice';
 import { validateAddress, validateLandmark, validatePincode } from './addressValidation';
 import { pincodeService } from '../services/pincode.service';
 import { leadCreatedMessage } from './rm';
+import { sendLeadCreatedWebhook } from '../services/webhook.service';
 import {
   businessLoanService,
   CONSTITUTION_TO_BUSINESS_TYPE,
@@ -229,7 +230,7 @@ export const businessLoanSteps: StepDefinition[] = [
         personalPan: ctx.answers.pan as string,
         token: ctx.answers.finfinityAccessToken as string | undefined,
       });
-      return { blLeadId: lead.leadId, blLeadRm: lead.rm };
+      return { blLeadId: lead.leadId, blLeadRm: lead.rm, blLeadReused: lead.reused };
     },
   },
   {
@@ -554,6 +555,28 @@ export const businessLoanSteps: StepDefinition[] = [
       if (turnover && v > turnover) return { ok: false, error: 'Annual profit cannot be more than annual turnover.' };
       return { ok: true, parsed: v };
     },
+    // Fires CIS's webhook here, not at blCreateLead above — that lead is created the moment the
+    // customer picks Business Loan, before loan amount/turnover/profit are known. This is the last
+    // of those three fields, so everything's in hand by now (2026-11-06: fire once all the relevant
+    // info for this product is in hand). monthly_income = annual profit / 12, per instruction.
+    onAnswer: (parsed, ctx) => {
+      const leadId = ctx.answers.blLeadId as string | undefined;
+      if (!leadId || ctx.answers.blLeadReused) return;
+      void sendLeadCreatedWebhook({
+        leadId,
+        name: ctx.answers.name as string | undefined,
+        mobile: ctx.answers.mobile as string | undefined,
+        email: ctx.answers.email as string | undefined,
+        pan: ctx.answers.pan as string | undefined,
+        product: 'Business Loan',
+        loanType: 'Business Loan',
+        segment: ctx.answers.segment as string | undefined,
+        pincode: ctx.answers.pincode as string | undefined,
+        city: ctx.answers.pincodeArea as string | undefined,
+        loanAmount: Number(ctx.answers.blLoanAmount) || undefined,
+        monthlyIncome: Number(parsed) / 12 || undefined,
+      });
+    },
   },
   {
     // Was never asked at all (2026-10-17 fix) — every other product's flow collects existing EMIs
@@ -625,7 +648,7 @@ export const businessLoanSteps: StepDefinition[] = [
       return `${greeting}<br><br>${leadCreatedMessage(payload.leadId, payload.rm)}`;
     },
     input: () => ({ type: 'none' }),
-    onAnswer: (_parsed, ctx): { resultPayload: EligibilityResultPayload } => {
+    onAnswer: (_parsed, ctx): { resultPayload: EligibilityResultPayload; applicationSubmitted?: boolean } => {
       if (isSalariedSegment(ctx) || !isSupportedBusinessEntity(ctx)) {
         return {
           resultPayload: {
@@ -657,7 +680,9 @@ export const businessLoanSteps: StepDefinition[] = [
         leadId: ctx.answers.blLeadId as string,
         leadCreated: true,
       };
-      return { resultPayload };
+      // A real lead means the application is actually in with Finfinity — no explicit "submit"
+      // button exists for this product (lead capture only), so reaching here IS the submission.
+      return { resultPayload, applicationSubmitted: true };
     },
   },
 ];

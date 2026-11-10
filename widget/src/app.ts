@@ -1,6 +1,7 @@
 import { CHECK_ELIGIBILITY, CHECK_EXISTING_APPLICATION, type ChatTurnResponse, type InputSpec } from '@builder-chatbot/shared';
 import { ChatApi, SessionExpiredError, describeApiError } from './api';
 import { cisLogo } from './cisLogo';
+import { ErrorReporter } from './errorReporter';
 // The finfinity wordmark's own fill colors (white text, teal accents) assume a dark background —
 // inlined raw (not as an <img src>) so it can sit inside a small dark chip in the otherwise-light
 // CIS header, matching the "Powered by finfinity" treatment already in the sidebar footer but with
@@ -41,6 +42,23 @@ if (typeof document !== 'undefined') {
 // throw under some locked-down browser/extension policies) — every call here used to assume it
 // always just works, which would crash widget init outright in those cases. A failed read/write is
 // treated as "nothing stored" / "couldn't persist", never a crash.
+/** Shared by showSkeletonCard (first eligibility computation) and showResultRecalculating (a
+ * profile-panel edit recomputing it) — same placeholder shape either way: 3 rows styled like the
+ * real `.la-lender` cards about to replace them (icon/name/amount), using CIS's own
+ * `.la-skeleton`/`la-pulse` primitives. */
+function skeletonLenderRowsHtml(): string {
+  const skeletonRow = () => `
+      <div class="lc-skel-row">
+        <div class="la-skeleton lc-skel-icon"></div>
+        <div class="lc-skel-lines">
+          <div class="la-skeleton" style="width:55%"></div>
+          <div class="la-skeleton" style="width:35%;height:10px"></div>
+        </div>
+        <div class="la-skeleton lc-skel-amount"></div>
+      </div>`;
+  return `<div class="lc-skel-lenders">${skeletonRow()}${skeletonRow()}${skeletonRow()}</div>`;
+}
+
 function safeGetItem(key: string): string | null {
   try {
     return localStorage.getItem(key);
@@ -70,9 +88,6 @@ const STORAGE_KEY = 'lc_session_token_v1';
 // verified; sent back on the next brand-new session so it can skip asking for both again, as
 // long as it's still within the remembered window.
 const IDENTITY_STORAGE_KEY = 'lc_identity_token_v1';
-// Must match style.css's la-message-arrive animation duration (.32s) — see appendBotBubble's own
-// doc comment for why the type-out effect waits this long before starting.
-const ARRIVAL_ANIMATION_MS = 320;
 const LOADING_LABEL: Record<string, string> = {
   dedupeCheck: 'Checking your details…',
   panFetch: 'Looking up your details…',
@@ -167,6 +182,11 @@ export class ChatWidget {
   private startRetryCount = 0;
   private hostEl: HTMLElement | null = null;
   private cleanupFns: Array<() => void> = [];
+  /** Set only by a launchToken passed into open() — a one-time, server-to-server-issued value (see
+   * launchToken.service.ts), never persisted to localStorage like STORAGE_KEY/IDENTITY_STORAGE_KEY
+   * above, since it's single-use and tied to this one open() call, not something to resume later. */
+  private launchToken: string | null = null;
+  private errorReporter: ErrorReporter;
 
   private panelEl!: HTMLDivElement;
   private rootEl!: HTMLDivElement;
@@ -184,6 +204,8 @@ export class ChatWidget {
   constructor(private opts: ChatWidgetOptions) {
     this.api = new ChatApi(opts.apiBaseUrl);
     this.sessionToken = safeGetItem(STORAGE_KEY);
+    this.errorReporter = new ErrorReporter(opts.apiBaseUrl, () => this.sessionToken);
+    this.errorReporter.start();
     this.buildDom();
   }
 
@@ -201,8 +223,13 @@ export class ChatWidget {
     }
     const shadow = host.attachShadow({ mode: 'open' });
 
+    // The two conversation-panel background images (style.css) used to be inlined as base64 right
+    // here — 4.49MB of this bundle, by far its biggest chunk (security-review finding, 2026-11-02).
+    // Now they're plain static files served from our own API, referenced via this placeholder since
+    // a relative url() in CSS injected as inline text would resolve against whatever page embeds the
+    // widget, not our server.
     const styleEl = document.createElement('style');
-    styleEl.textContent = widgetStyles;
+    styleEl.textContent = widgetStyles.split('__LC_API_BASE__').join(this.opts.apiBaseUrl);
     shadow.appendChild(styleEl);
 
     const root = document.createElement('div');
@@ -441,6 +468,7 @@ export class ChatWidget {
       this.api,
       () => this.sessionToken,
       (result, messages) => void this.applyUpdatedResult(result, messages),
+      () => this.showResultRecalculating(),
     );
     this.bodyEl = panel.querySelector('.la-chat')!;
     this.chatLogEl = panel.querySelector('.la-chat')!;
@@ -486,9 +514,23 @@ export class ChatWidget {
   }
 
   /** Opens the panel from outside — for a host page that passed `hideLauncher: true` and wants to
-   * trigger this widget from its own existing chat-entry-point UI instead of this widget's launcher. */
-  open(): void {
+   * trigger this widget from its own existing chat-entry-point UI instead of this widget's launcher.
+   * `launchToken` (2026-11-02, SDK — see launchToken.service.ts): a partner's own backend encrypts
+   * product/mobile/email with a shared secret and passes the result straight here, pre-filling the
+   * widget so the customer isn't asked for what the partner's app already knows. Only read if this
+   * is the very first start() this instance makes (no stored sessionToken yet); ignored on every
+   * later open() call in the same page session, same as identityToken/STORAGE_KEY never resetting
+   * mid-session. */
+  open(launchToken?: string): void {
+    if (launchToken) this.launchToken = launchToken;
     this.toggle(true);
+  }
+
+  /** Closes the panel from outside — same idea as open() in reverse, for a host page that wants its
+   * own UI (e.g. a custom back/close button elsewhere on the page) to dismiss the widget too, not
+   * just the widget's own built-in × button (2026-11-04, requested alongside the SDK integration). */
+  close(): void {
+    this.toggle(false);
   }
 
   /** Sets light/dark theme from outside — for a host page that wants its own theme toggle (e.g. a
@@ -526,6 +568,7 @@ export class ChatWidget {
     document.body.style.overflow = '';
     for (const cleanup of this.cleanupFns) cleanup();
     this.cleanupFns = [];
+    this.errorReporter.stop();
     this.hostEl?.remove();
     this.hostEl = null;
   }
@@ -535,7 +578,7 @@ export class ChatWidget {
     try {
       const resp = this.sessionToken
         ? await this.api.send({ sessionToken: this.sessionToken })
-        : await this.api.send({ identityToken: safeGetItem(IDENTITY_STORAGE_KEY) ?? undefined });
+        : await this.api.send({ identityToken: safeGetItem(IDENTITY_STORAGE_KEY) ?? undefined, launchToken: this.launchToken ?? undefined });
       if (gen !== this.requestGen) return; // a newer request (e.g. Start over) began while this one was in flight
       this.startRetryCount = 0;
       this.sessionToken = resp.sessionToken;
@@ -555,7 +598,7 @@ export class ChatWidget {
         this.sessionToken = null;
         return this.start();
       }
-      this.renderFatalError(describeApiError(err, 'Sorry, something went wrong on our end. Please try again in a moment.'));
+      this.renderFatalError(describeApiError(err, 'Sorry, something went wrong on our end. Please try again in a moment.'), err);
     }
   }
 
@@ -626,118 +669,91 @@ export class ChatWidget {
   }
 
   private appendBotBubble(html: string, hint?: string | null) {
-    // No typing-indicator swap (removed 2026-10-29) — a two-step "empty bubble, wait, replace
-    // with real bubble" render was the actual source of every bubble-flicker bug reported this
-    // session (CSS cascade conflicts in the intermediate empty state kept resurfacing in subtly
-    // different ways no matter how many times that CSS was fixed/deduplicated). The bubble's DOM
-    // node is still never swapped — the typewriter effect below (2026-10-31) only ever grows text
-    // already sitting inside the final, already-correct markup, so that bug class can't recur.
     const wasNearBottom = this.isNearBottom();
     const row = document.createElement('div');
     row.className = 'la-message is-new is-current';
-    row.innerHTML = `<span class="la-avatar">${ICON.bot}</span><div class="la-bubble">${html}${
-      hint ? `<div class="lc-hint">${hint}</div>` : ''
-    }</div>`;
-    this.chatLogEl.appendChild(row);
-    this.scrollDownIfPinned(wasNearBottom);
-    // .is-new carries a `will-change` compositing hint (see style.css) so the arrival animation
-    // doesn't force a repaint of .la-chat's large background artwork every frame — stripped once
-    // the animation finishes so GPU layers don't pile up across a long conversation.
-    row.addEventListener('animationend', () => row.classList.remove('is-new'), { once: true });
-    const bubble = row.querySelector<HTMLElement>('.la-bubble');
-    if (bubble) {
-      // Bug fixed 2026-10-31 (mobile report: "the text... is flickering... doesn't look polished"):
-      // typeOutBubble used to start the instant the bubble was appended, running at the same time as
-      // the .is-new arrival animation (fade + slide-up) on the SAME element for its first 320ms —
-      // rapidly mutating text nodes inside an element mid compositing-animation is exactly the kind
-      // of thing that janks/flickers on weaker mobile GPUs. Waiting for the arrival to visually
-      // settle first (ARRIVAL_ANIMATION_MS, kept in sync with style.css's la-message-arrive
-      // duration) before starting the type-out fixes that; a plain setTimeout rather than this row's
-      // own 'animationend' event, since prefers-reduced-motion disables the animation entirely (no
-      // animationend would ever fire) but typing should still happen either way. +20ms, not the
-      // exact same duration, so this timer doesn't fire in the identical tick as the animationend
-      // listener right above (removing the .is-new class, tearing down its will-change compositing
-      // layer) — two unrelated style/DOM changes landing in the same frame is its own small source
-      // of jank, separate from (and in addition to) the per-frame typing cost fixed below.
-      //
-      // Regression fixed 2026-11-02 ("the eligibility is again going to the bottom of the page"):
-      // typeOutBubble() used to reset suppressAutoScrollFollow to false itself, which was correct
-      // back when it ran synchronously — but once its start was delayed here, that reset started
-      // firing~340ms AFTER scrollToResultTop() (later in this same renderTurn pass) had already set
-      // it true, silently cancelling the suppression right as the typing animation's per-frame
-      // scroll-follow kicked in. Reset it HERE instead, synchronously, at the same point in time
-      // appendBotBubble always ran at before — so if scrollToResultTop runs later in this turn, its
-      // "true" is guaranteed to be the last word, exactly like before this delay existed.
-      this.suppressAutoScrollFollow = false;
-      setTimeout(() => this.typeOutBubble(bubble, wasNearBottom), ARRIVAL_ANIMATION_MS + 20);
-    }
-  }
 
-  /** Makes a bot bubble feel typed rather than dumped on screen instantly (2026-10-31 direct
-   * instruction: "it should feel like the bot is replying... thoda sa smooth banao... premium
-   * feel"). Only ever mutates existing TEXT NODES' own .data — the HTML structure (tags, the hint
-   * div, etc.) is rendered complete from the very first frame, so this can never corrupt markup the
-   * way an incremental innerHTML-rebuild approach could. Duration is capped regardless of message
-   * length ("typing speed should be thoda fast, the customer should not wait") — a one-line reply
-   * and a long paragraph both finish within the same short window, just at different per-character
-   * speeds. */
-  private typeOutBubble(bubble: HTMLElement, followScroll: boolean) {
-    // Bug fixed 2026-10-31: this animation used to call scrollDown() on every one of its ~25 frames
-    // (up to 420ms) whenever followScroll was true. When the bot message immediately before a result
-    // card was still mid-typing at the exact moment scrollToResultTop() ran (always true — both fire
-    // within the same synchronous renderTurn pass), those later frames kept re-forcing the view back
-    // to the absolute bottom (the RM card) every ~16ms, overriding scrollToResultTop's one-time
-    // correction almost as soon as it landed — the customer ended up at the bottom regardless.
-    // suppressAutoScrollFollow is reset in appendBotBubble, synchronously, BEFORE this function's
-    // own (delayed) call — see that reset's own comment for why it can't live here anymore now that
-    // typing starts on a delay instead of immediately.
-    const walker = document.createTreeWalker(bubble, NodeFilter.SHOW_TEXT);
+    // Parse html in a detached element to extract the text structure and tokens cleanly
+    const template = document.createElement('div');
+    template.innerHTML = html;
+
+    // Create the message row with an empty bubble — NEVER inject the full text into the DOM beforehand!
+    row.innerHTML = `<span class="la-avatar">${ICON.bot}</span><div class="la-bubble"><span class="la-bubble-content"></span>${
+      hint ? `<div class="lc-hint" style="opacity:0;transition:opacity .35s ease">${hint}</div>` : ''
+    }</div>`;
+
+    row.addEventListener('animationend', () => row.classList.remove('is-new'), { once: true });
+    const bubble = row.querySelector<HTMLElement>('.la-bubble')!;
+    const contentEl = row.querySelector<HTMLElement>('.la-bubble-content')!;
+
+    // Move the parsed child nodes from template into contentEl
+    while (template.firstChild) {
+      contentEl.appendChild(template.firstChild);
+    }
+
+    // Now all text nodes are inside contentEl. Extract their original data and wipe them EMPTY.
+    const isReduced = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const walker = document.createTreeWalker(contentEl, NodeFilter.SHOW_TEXT);
     const textNodes: Text[] = [];
-    let full = '';
+    const originals: string[] = [];
+    let totalChars = 0;
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
       const t = node as Text;
       textNodes.push(t);
-      full += t.data;
+      originals.push(t.data);
+      totalChars += t.data.length;
+      if (!isReduced) {
+        t.data = ''; // COMPLETELY BLANK BEFORE EVER BEING ATTACHED TO THE VISIBLE DOM!
+      }
     }
-    const totalChars = full.length;
-    if (totalChars === 0) return;
-    const originals = textNodes.map((t) => t.data);
-    textNodes.forEach((t) => (t.data = ''));
 
-    // Slowed down further (2026-10-31: "slow it down a little bit") and throttled to ~24fps instead
-    // of updating on literally every animation frame (~60fps) — still ran down even after only
-    // throttling the scroll-follow call, because the actual TEXT mutation itself (node.data = ...)
-    // forces a layout reflow for that bubble on every write, and that was still happening every
-    // single frame regardless of the scroll fix. Updating the DOM only every ~42ms instead of every
-    // ~16ms cuts the number of forced reflows by more than half; at normal reading speed this reveals
-    // 1-2 characters per update either way, so it doesn't look any less smooth.
-    const maxDurationMs = 750;
-    const minPerCharMs = 14;
-    const UPDATE_INTERVAL_MS = 42;
-    const totalDuration = Math.min(maxDurationMs, totalChars * minPerCharMs);
+    this.suppressAutoScrollFollow = false;
+    this.chatLogEl.appendChild(row);
+    this.scrollDownIfPinned(wasNearBottom);
+
+    const hintEl = bubble.querySelector<HTMLElement>('.lc-hint');
+    if (totalChars === 0 || isReduced) {
+      if (hintEl) hintEl.style.opacity = '1';
+      return;
+    }
+
+    // Fast, smooth ChatGPT-style streaming cursor
+    const cursor = document.createElement('span');
+    cursor.className = 'lc-typing-cursor';
+    if (hintEl) bubble.insertBefore(cursor, hintEl);
+    else bubble.appendChild(cursor);
+
+    // Fast, smooth continuous streaming: ~60-75 chars/sec (~14ms per character),
+    // capped between 350ms and 1800ms so both short and long messages finish promptly.
+    const totalDuration = Math.min(1800, Math.max(350, totalChars * 14));
     const start = performance.now();
-    let lastUpdate = 0;
+
     const step = (now: number) => {
       const elapsed = now - start;
       const isLastFrame = elapsed >= totalDuration;
-      // Always write the final frame (so the message never visibly stops short of complete), but
-      // otherwise skip this frame entirely if the last DOM write was too recent — no text-node
-      // mutation, no scroll, no reflow at all on skipped frames.
-      if (!isLastFrame && now - lastUpdate < UPDATE_INTERVAL_MS) {
-        requestAnimationFrame(step);
-        return;
-      }
-      lastUpdate = now;
-      const revealed = Math.min(totalChars, Math.round((elapsed / totalDuration) * totalChars));
+      const progress = isLastFrame ? 1 : elapsed / totalDuration;
+      const revealed = isLastFrame ? totalChars : Math.min(totalChars, Math.round(progress * totalChars));
+
       let remaining = revealed;
       for (const [i, node] of textNodes.entries()) {
         const len = Math.min(remaining, originals[i].length);
         if (node.data.length !== len) node.data = originals[i].slice(0, len);
         remaining -= len;
-        if (remaining <= 0) break;
+        if (remaining <= 0) {
+          if (node.data.length > len) node.data = originals[i].slice(0, len);
+        }
       }
-      if (followScroll && !this.suppressAutoScrollFollow) this.bodyEl.scrollTop = this.bodyEl.scrollHeight;
-      if (!isLastFrame) requestAnimationFrame(step);
+
+      if (wasNearBottom && !this.suppressAutoScrollFollow && this.isNearBottom(140)) {
+        this.bodyEl.scrollTop = this.bodyEl.scrollHeight;
+      }
+
+      if (isLastFrame) {
+        cursor.remove();
+        if (hintEl) hintEl.style.opacity = '1';
+      } else {
+        requestAnimationFrame(step);
+      }
     };
     requestAnimationFrame(step);
   }
@@ -931,7 +947,7 @@ export class ChatWidget {
   /** (Re)renders the result card into its own container — kept separate from the sticky chat bar
    * appended after it, so a profile-panel edit can refresh just the numbers without disturbing it. */
   private renderResultInto(result: unknown) {
-    this.resultContainerEl.innerHTML = renderResultCard(result as any);
+    this.resultContainerEl.innerHTML = renderResultCard(result as any, this.opts.apiBaseUrl);
     const restartBtn = this.resultContainerEl.querySelector<HTMLButtonElement>('#lc-btn-restart');
     if (restartBtn) restartBtn.onclick = () => this.restart();
     this.wireResultMinimize();
@@ -1002,6 +1018,11 @@ export class ChatWidget {
         }
         if (!slot) return;
         if (result.ok) {
+          // Bug fixed 2026-11-02 ("edit still appears to work right after selecting an offer"):
+          // select-offer locks the backend immediately (applicationSubmitted), but the sidebar's
+          // Edit buttons were left in their stale pre-selection state until the next full reload —
+          // refresh it now so they visibly disable too, not just reject the save server-side.
+          void this.profilePanel.refresh();
           if (plCard) {
             // Personal Loan: once one offer is picked, the others no longer matter — hide every
             // other lender card, the "highest eligibility" summary above them (it compared offers
@@ -1014,7 +1035,7 @@ export class ChatWidget {
             plCard.parentElement?.querySelectorAll<HTMLElement>('[data-pl-lender-card]').forEach((card) => {
               if (card !== plCard) card.style.display = 'none';
             });
-            plCard.innerHTML = lenderThankYouHtml(lenderName, rmName);
+            plCard.innerHTML = lenderThankYouHtml(lenderName, this.opts.apiBaseUrl, rmName);
             this.scrollChangedContentIntoView(plCard);
           } else {
             // Home Loan/LAP: same "nothing else matters once one's picked" treatment as Personal
@@ -1027,7 +1048,7 @@ export class ChatWidget {
             if (highestEligibility) highestEligibility.style.display = 'none';
             if (lenderListLabel) lenderListLabel.style.display = 'none';
             if (lenderList) {
-              lenderList.innerHTML = lenderThankYouHtml(lenderName, rmName);
+              lenderList.innerHTML = lenderThankYouHtml(lenderName, this.opts.apiBaseUrl, rmName);
               this.scrollChangedContentIntoView(lenderList);
             }
           }
@@ -1473,7 +1494,7 @@ export class ChatWidget {
       await this.renderTurn(answered);
     } catch (err) {
       if (gen !== this.requestGen) return;
-      this.renderFatalError(describeApiError(err, 'Sorry, something went wrong on our end. Please try again in a moment.'));
+      this.renderFatalError(describeApiError(err, 'Sorry, something went wrong on our end. Please try again in a moment.'), err);
     }
   }
 
@@ -1750,19 +1771,22 @@ export class ChatWidget {
     this.clearComposer();
     const row = document.createElement('div');
     row.className = 'la-message';
-    const skeletonRow = () => `
-      <div class="lc-skel-row">
-        <div class="la-skeleton lc-skel-icon"></div>
-        <div class="lc-skel-lines">
-          <div class="la-skeleton" style="width:55%"></div>
-          <div class="la-skeleton" style="width:35%;height:10px"></div>
-        </div>
-        <div class="la-skeleton lc-skel-amount"></div>
-      </div>`;
-    row.innerHTML = `<span class="la-avatar">${ICON.bot}</span><div class="la-bubble"><div class="lc-skel-lenders">${skeletonRow()}${skeletonRow()}${skeletonRow()}</div></div>`;
+    row.innerHTML = `<span class="la-avatar">${ICON.bot}</span><div class="la-bubble">${skeletonLenderRowsHtml()}</div>`;
     this.chatLogEl.appendChild(row);
     this.scrollDown();
     return row;
+  }
+
+  /** Called the instant a profile-panel edit is submitted (see ProfilePanel's onEditStarted) —
+   * bug fixed 2026-11-10 (CIS-reported): the stale, pre-edit eligibility cards used to just sit on
+   * screen, unchanged, for the entire recalculation round-trip, with nothing indicating a
+   * recalculation was even happening. Replaces the result card's current content with the same
+   * skeleton placeholder used for the very first eligibility computation — applyUpdatedResult
+   * (called once the recalculation actually finishes) already overwrites whatever's in
+   * resultContainerEl with the fresh cards, so no other change was needed to complete the cycle. */
+  private showResultRecalculating(): void {
+    if (!this.resultCardShown) return; // nothing shown yet for this edit to be recalculating
+    this.resultContainerEl.innerHTML = skeletonLenderRowsHtml();
   }
 
   private async sendAndRender(stepId: string | undefined, value: string | undefined) {
@@ -1795,11 +1819,16 @@ export class ChatWidget {
         this.resetChatLog();
         return this.start();
       }
-      this.renderFatalError(describeApiError(err, 'Sorry, something went wrong on our end. Please try again in a moment.'));
+      this.renderFatalError(describeApiError(err, 'Sorry, something went wrong on our end. Please try again in a moment.'), err);
     }
   }
 
-  private renderFatalError(message = 'Sorry, something went wrong on our end. Please try again in a moment.') {
+  private renderFatalError(message = 'Sorry, something went wrong on our end. Please try again in a moment.', cause?: unknown) {
+    // Reported here, in the one shared place every "customer is now looking at a broken widget"
+    // path already funnels through, rather than at each of this method's call sites individually
+    // (see errorReporter.ts's own doc comment for why this matters — these are deliberately-caught
+    // failures that would otherwise leave zero record anywhere once the customer closes the tab).
+    this.errorReporter.reportCaught(message, cause);
     this.clearComposer();
     const row = document.createElement('div');
     row.className = 'la-message';

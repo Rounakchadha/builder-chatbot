@@ -9,15 +9,16 @@ import { validateChoice } from '../lib/validateChoice';
 import { UserFacingError } from '../lib/userFacingError';
 import { prisma } from '../lib/prisma';
 import { Prisma } from '@prisma/client';
-import { bureauService } from '../services/bureau.service';
+import { bureauService, realBureauApi, realBureauFlowEnabled, type BureauPull } from '../services/bureau.service';
 import { customerService } from '../services/customer.service';
 import { dedupeService, type DuplicateMatch } from '../services/dedupe.service';
 import { eligibilityService } from '../services/eligibility.service';
 import { homeLoanEligibilityService, mapSegmentToHlEmploymentType, mapPropertyTypeToHl, HL_LENDER_DISPLAY_NAME, type HlEligibilityFacts, type HlLenderEligibility } from '../services/homeLoanEligibility.service';
 import { lenderNamesMatch } from './personalLoan';
-import { ensureLeadOnce, leadService, PRODUCT_CODE } from '../services/lead.service';
+import { ensureLeadOnce, leadService, markLeadFinancialsSynced, PRODUCT_CODE } from '../services/lead.service';
 import { panService } from '../services/pan.service';
 import { pincodeService } from '../services/pincode.service';
+import { sendLeadCreatedWebhook } from '../services/webhook.service';
 import { smsService, enforceDuplicateVerifyRateLimit } from '../services/sms.service';
 import { rememberIdentity } from '../services/identity.service';
 import { statusService } from '../services/status.service';
@@ -47,6 +48,29 @@ function isHomeLoanOrLap(answers: Answers): boolean {
  * (2026-10-16 direct instruction — table confirmed the P/C/F/H/A/T code mapping). */
 function isIndividualPan(pan: string | undefined): boolean {
   return !pan || pan.charAt(3).toUpperCase() === 'P';
+}
+
+// 2026-11-03 instruction: "built this but dont use it anywhere yet i will tell u when to use it" —
+// the fuzzy name-match feature below (panNameMismatchChoice, namesLooselyMatch) is fully wired but
+// switched off here. Flip to true when told to turn it on; nothing else needs to change.
+const HOME_LOAN_NAME_MISMATCH_CHECK_ENABLED = false;
+
+/** A partner's own launch-token `name` (per their own journey) vs. the real PAN-verified name —
+ * deliberately NOT an exact match, since the single most common real mismatch is just an omitted
+ * middle name (e.g. "Rounak Chadha" prefilled vs. "Rounak Kumar Chadha" on the actual PAN record —
+ * same person, nothing wrong). Every meaningful word in the SHORTER name must appear somewhere in
+ * the longer one; if even one doesn't, treat it as a real mismatch worth asking about rather than
+ * silently assuming it's fine (2026-11-03 instruction: "if its thoda bhi same let it, if its
+ * different then prompt"). Not real NLP — good enough to be indicative, same spirit as
+ * lenderNamesMatch/reasonsOverlap in personalLoan.ts. */
+function namesLooselyMatch(a: string, b: string): boolean {
+  const tokens = (s: string) => new Set(s.toLowerCase().replace(/[^a-z\s]/g, '').split(/\s+/).filter(Boolean));
+  const tokensA = tokens(a);
+  const tokensB = tokens(b);
+  if (tokensA.size === 0 || tokensB.size === 0) return true; // nothing real to compare — don't block on it
+  const [shorter, longer] = tokensA.size <= tokensB.size ? [tokensA, tokensB] : [tokensB, tokensA];
+  for (const word of shorter) if (!longer.has(word)) return false;
+  return true;
 }
 
 // Security-review finding, 2026-10-23: there was no minimum-age check anywhere for Home Loan/LAP —
@@ -245,7 +269,7 @@ function buildProfileSummary(ctx: StepContext): string {
   const fullName = (a.fullName as string | undefined) ?? (a.name as string | undefined);
   if (fullName) lines.push(`<strong>Name:</strong> ${escapeHtml(fullName)}`);
   if (a.mobile) lines.push(`<strong>Mobile:</strong> +91 ${maskMobile(a.mobile as string)}`);
-  if (a.pan) lines.push(`<strong>PAN:</strong> ${a.pan}`);
+  if (a.pan) lines.push(`<strong>PAN:</strong> ${maskPan(a.pan as string)}`);
   if (a.creditScore) lines.push(`<strong>CIBIL score:</strong> ${a.creditScore}`);
   if (a.email) lines.push(`<strong>Email:</strong> ${escapeHtml(a.email as string)}`);
   if (a.segment) lines.push(`<strong>Employment:</strong> ${a.segment}`);
@@ -439,11 +463,34 @@ async function computeEligibilityPayload(
  * creates the lead, same as before this sync existed. A sync failure here is logged, not fatal —
  * worst case the customer still sees whatever eligibility figure the (still-)incomplete lead
  * produces, same as before this existed, rather than the whole result step failing outright. */
+/** Every field syncLeadFinancials below actually pushes onto Finfinity (updateCustomer's PAN/
+ * email/pincode/segment, updateLead's loanType/income/emi/property details) — compared against
+ * Lead.lastSyncedFinancialsJson to decide whether a reused lead's sync can safely be skipped (see
+ * ensureLead's own comment on why this exists). Plain key order is fine: this is only ever compared
+ * against another call of the exact same function, never hand-written or diffed externally. */
+function buildFinancialsSnapshot(ctx: StepContext, info: { pan: string; loanType: string }): string {
+  const a = ctx.answers;
+  return JSON.stringify({
+    pan: info.pan,
+    email: a.email,
+    pincode: a.pincode,
+    segment: a.segment,
+    loanType: info.loanType,
+    income: Number(a.income) || 0,
+    emi: Number(a.emi) || 0,
+    propertyIdentified: Boolean(a.propertyValue) || a.propertyGate === 'Yes' || propertyAlreadyIdentified(a),
+    propertyType: a.propertyType ?? null,
+    occupancy: a.occupancy ?? null,
+    collateralType: a.collateralType ?? null,
+    propertyValue: a.propertyValue ?? null,
+  });
+}
+
 async function ensureLead(
   ctx: StepContext,
   info: { pan: string; name?: string; creditScore?: number; product: string; loanType: string },
   opts?: { syncFullProfile?: boolean },
-): Promise<{ builderLeadId: string | null; rm?: { name: string; phone: string; email: string } }> {
+): Promise<{ builderLeadId: string | null; rm?: { name: string; phone: string; email: string }; reused?: boolean }> {
   // Idempotency (security-review finding, 2026-10-23, extended 2026-10-31): ensureLeadOnce (see its
   // own doc comment in lead.service.ts) covers both "this exact conversation already has a lead"
   // (a double-click, a retried request after a network blip) AND "this real customer already has a
@@ -463,16 +510,28 @@ async function ensureLead(
   });
   const builderLeadId = result.builderLeadId;
 
-  // Skip the sync for a REUSED lead (2026-10-31 fix) — updateLead/updateCustomer appear to retrigger
-  // Finfinity's own lead notification every time they run, not just on creation (confirmed: 5 "Start
-  // over" conversations for the same returning customer correctly reused the same real lead — no new
-  // create_anacity_lead calls — yet the email spam to Sparsh continued, because this ran unconditionally
-  // every time regardless). A genuinely new lead still gets its full profile synced immediately.
-  if (opts?.syncFullProfile && builderLeadId && !result.reused) {
+  // Bug fixed 2026-11-10: a REUSED lead used to skip this sync unconditionally (2026-10-31 fix,
+  // reasoning below) — which also meant a returning customer's CURRENT income/EMI never reached
+  // Finfinity at all, so getcustomeroffers kept answering against whatever was on file from the
+  // very first time this lead was created (confirmed live: a customer who'd edited income down to
+  // ₹30,000 still got eligibility computed against the original ₹4,00,000). Now compares against
+  // what was actually last synced (Lead.lastSyncedFinancialsJson) — a genuine change still syncs
+  // (and still notifies the RM, correctly, since something real actually changed); only a
+  // byte-for-byte-identical revisit skips it, which is what the ORIGINAL 2026-10-31 bug report
+  // actually was (five identical "Start over" clicks, not five real updates). updateLead/
+  // updateCustomer appear to retrigger Finfinity's own lead notification every time they run, not
+  // just on creation, which is why an unconditional sync on every reuse was a real problem worth
+  // avoiding in the first place.
+  const snapshot = buildFinancialsSnapshot(ctx, info);
+  const shouldSync = opts?.syncFullProfile && builderLeadId && (!result.reused || result.lastSyncedFinancialsJson !== snapshot);
+  if (shouldSync) {
     await syncLeadFinancials(ctx, builderLeadId, info.pan, info.loanType);
+    await markLeadFinancialsSynced(ctx.conversationId, snapshot).catch((err) =>
+      logger.error({ err, conversationId: ctx.conversationId }, 'failed to record the synced-financials snapshot — next reuse of this lead will just sync again, which is safe, only slightly redundant'),
+    );
   }
 
-  return { builderLeadId, rm: result.rm };
+  return { builderLeadId, rm: result.rm, reused: result.reused };
 }
 
 /** Pushes the customer's current profile + loan financials onto an already-created real lead —
@@ -600,6 +659,25 @@ export async function computeResultPayload(ctx: StepContext): Promise<Eligibilit
     );
     builderLeadId = lead.builderLeadId ?? undefined;
     realRm = lead.rm;
+    // By this point in the flow (right before eligibility is computed), income/property/pincode/
+    // segment/email are all already collected — fire CIS's webhook here with the full picture,
+    // rather than generically at lead-creation time (2026-11-06: fire once all the relevant info for
+    // this product is in hand). Skipped for a reused lead, same as the RM-summary-email dedupe.
+    if (builderLeadId && !lead.reused) {
+      void sendLeadCreatedWebhook({
+        leadId: builderLeadId,
+        name: a.name as string | undefined,
+        mobile: a.mobile as string | undefined,
+        email: a.email as string | undefined,
+        pan,
+        product: a.product as string,
+        loanType: a.loanType as string,
+        segment: a.segment as string | undefined,
+        pincode: a.pincode as string | undefined,
+        city: a.pincodeArea as string | undefined,
+        monthlyIncome: Number(a.income) || undefined,
+      });
+    }
   }
 
   const base = await computeEligibilityPayload(ctx, undefined, builderLeadId, realRm);
@@ -629,7 +707,14 @@ export async function recomputeEligibility(ctx: StepContext, previous: Eligibili
     // asking for updated offers — otherwise a real getcustomeroffers recompute would still be
     // answering against the lead's ORIGINAL numbers, silently ignoring the edit just made.
     if (builderLeadId) {
-      await syncLeadFinancials(ctx, builderLeadId, pan, ctx.answers.loanType as string);
+      const loanType = ctx.answers.loanType as string;
+      await syncLeadFinancials(ctx, builderLeadId, pan, loanType);
+      // Recorded so a LATER fresh conversation reusing this same lead (see ensureLead's own
+      // snapshot comparison) correctly recognizes this edit already happened, instead of treating
+      // it as unsynced and re-pushing (and re-notifying the RM for) the exact same numbers again.
+      await markLeadFinancialsSynced(ctx.conversationId, buildFinancialsSnapshot(ctx, { pan, loanType })).catch((err) =>
+        logger.error({ err, conversationId: ctx.conversationId }, 'failed to record the synced-financials snapshot after a profile-panel edit — harmless, just slightly redundant next time'),
+      );
     }
   }
   return computeEligibilityPayload(ctx, previous, builderLeadId);
@@ -938,7 +1023,31 @@ export const homeLoanFlow: FlowDefinition = {
       input: () => ({ type: 'none' }),
       onAnswer: async (_parsed, ctx) => {
         const identity = await panService.lookup(ctx.answers.pan as string, ctx.answers.finfinityAccessToken as string | undefined);
-        return { name: identity.nameMasked, fullName: identity.name, dob: identity.dob, gender: identity.gender };
+        const prefilledName = ctx.answers.prefilledName as string | undefined;
+        const mismatch = Boolean(prefilledName && identity.name && !namesLooselyMatch(prefilledName, identity.name));
+        return { name: identity.nameMasked, fullName: identity.name, dob: identity.dob, gender: identity.gender, nameMismatchPending: mismatch };
+      },
+    },
+    // ---------- SDK name-prefill mismatch guard (not-found branch only) — only ever fires when a
+    // partner's launch token actually included a name AND the real PAN record's name doesn't loosely
+    // match it (see namesLooselyMatch's own doc comment). Reuses the exact same duplicateField/
+    // panDuplicateChoice combo the PAN-collision retry below already keys off, so "Enter a different
+    // PAN" here walks straight into panRetry/panRetryFetch with no new step logic needed. ----------
+    {
+      id: 'panNameMismatchChoice',
+      type: 'choice',
+      progressLabel: 'About you',
+      isApplicable: (ctx) => HOME_LOAN_NAME_MISMATCH_CHECK_ENABLED && ctx.answers.dedupeFound === false && Boolean(ctx.answers.nameMismatchPending),
+      botMessage: (ctx) =>
+        `The name on this PAN doesn't quite match <strong>${escapeHtml(ctx.answers.prefilledName as string)}</strong> — would you like to continue with this PAN, or enter a different one?`,
+      input: () => ({ type: 'choice', options: ['Continue with this PAN', 'Enter a different PAN'], layout: 'column' }),
+      validate: (value, ctx) =>
+        validateChoice(ctx, 'panNameMismatchChoice', ['Continue with this PAN', 'Enter a different PAN'], value, 'Would you like to continue with this PAN, or enter a different one?'),
+      onAnswer: async (parsed) => {
+        if (parsed === 'Enter a different PAN') {
+          return { nameMismatchPending: false, duplicateField: 'PAN', panDuplicateChoice: 'Enter a different PAN' };
+        }
+        return { nameMismatchPending: false };
       },
     },
     // ---------- PAN-collision guard (not-found branch only) ----------
@@ -1061,7 +1170,12 @@ export const homeLoanFlow: FlowDefinition = {
       input: () => ({ type: 'none' }),
       onAnswer: async (_parsed, ctx) => {
         const identity = await panService.lookup(ctx.answers.pan as string, ctx.answers.finfinityAccessToken as string | undefined);
-        return { name: identity.nameMasked, fullName: identity.name, dob: identity.dob };
+        // Same name-mismatch re-check as panFetch — a retry PAN can mismatch the partner's prefilled
+        // name too, and panNameMismatchChoice's own isApplicable doesn't care which fetch step set
+        // the flag, so re-setting it here routes straight back into the same choice step.
+        const prefilledName = ctx.answers.prefilledName as string | undefined;
+        const mismatch = Boolean(prefilledName && identity.name && !namesLooselyMatch(prefilledName, identity.name));
+        return { name: identity.nameMasked, fullName: identity.name, dob: identity.dob, nameMismatchPending: mismatch };
       },
     },
     {
@@ -1290,7 +1404,7 @@ export const homeLoanFlow: FlowDefinition = {
       id: 'triggerOtpBureauFound',
       type: 'apiFetch',
       progressLabel: 'Verifying identity',
-      isApplicable: (ctx) => ctx.answers.dedupeFound === true && !ctx.answers.creditScore && isIndividualPan(ctx.answers.pan as string | undefined),
+      isApplicable: (ctx) => ctx.answers.dedupeFound === true && !ctx.answers.creditScore && !realBureauFlowEnabled && isIndividualPan(ctx.answers.pan as string | undefined),
       botMessage: () => null,
       input: () => ({ type: 'none' }),
       onAnswer: async (_parsed, ctx) => {
@@ -1301,7 +1415,7 @@ export const homeLoanFlow: FlowDefinition = {
       id: 'otpBureauFound',
       type: 'otp',
       progressLabel: 'Verifying identity',
-      isApplicable: (ctx) => ctx.answers.dedupeFound === true && !ctx.answers.creditScore && isIndividualPan(ctx.answers.pan as string | undefined),
+      isApplicable: (ctx) => ctx.answers.dedupeFound === true && !ctx.answers.creditScore && !realBureauFlowEnabled && isIndividualPan(ctx.answers.pan as string | undefined),
       botMessage: (ctx) => `We've sent a 6-digit code to +91 ${maskMobile(ctx.answers.mobile as string)} — entering it gives us your consent to pull your credit bureau report.`,
       input: () => ({ type: 'otp', length: 6 }),
       validate: (value) => {
@@ -1331,30 +1445,122 @@ export const homeLoanFlow: FlowDefinition = {
         };
       },
     },
+    // ---------- Real interactive bureau check (2026-11-06) — generatebureau + validatebureau,
+    // replacing the placeholder generic-OTP-then-mock-score path above when realBureauFlowEnabled.
+    // Confirmed live by Ritendra: generatebureau ALSO sends an OTP for the CIBIL path (not just
+    // Experian, despite bureau_api_payloads.txt only documenting a "question" for CIBIL) — the
+    // customer only ever types an OTP in either case. The CIBIL questionKey/answerKey/
+    // ChallengeConfigGUID are never shown to or asked from the customer; they're just carried
+    // through automatically from generateBureau()'s response into validateBureauCibil(). Error
+    // handling deliberately minimal for now (e.g. a wrong OTP just says "try again", no distinct
+    // "CIBIL rejected your answer" messaging) — explicit instruction, 2026-11-06, to refine once
+    // the rest of the team is back online tomorrow. ----------
+    {
+      id: 'triggerBureauRealFound',
+      type: 'apiFetch',
+      progressLabel: 'Verifying identity',
+      isApplicable: (ctx) => ctx.answers.dedupeFound === true && !ctx.answers.creditScore && realBureauFlowEnabled && isIndividualPan(ctx.answers.pan as string | undefined),
+      botMessage: () => null,
+      input: () => ({ type: 'none' }),
+      onAnswer: async (_parsed, ctx) => {
+        const resp = await realBureauApi.generateBureau({
+          pan: ctx.answers.pan as string,
+          phoneNumber: ctx.answers.mobile as string,
+          officialEmail: ctx.answers.email as string,
+          pincode: ctx.answers.pincode as string,
+          applicantTypeKey: mapSegmentToHlEmploymentType(ctx.answers.segment as string | undefined),
+          token: ctx.answers.finfinityAccessToken as string,
+        });
+        return resp.bureau_type === 'CIBIL'
+          ? {
+              bureauRealType: 'CIBIL' as const,
+              bureauRealCustomerId: resp.customer_id,
+              bureauRealOtpSessionId: resp.otp_session_id,
+              bureauRealQuestionKey: resp.questionKey,
+              bureauRealAnswerKey: resp.answerKey,
+              bureauRealChallengeGuid: resp.ChallengeConfigGUID,
+            }
+          : { bureauRealType: 'EXPERIAN' as const, bureauRealCustomerId: resp.customer_id, bureauRealOtpSessionId: resp.otp_session_id };
+      },
+    },
+    {
+      id: 'otpBureauRealFound',
+      type: 'otp',
+      progressLabel: 'Verifying identity',
+      isApplicable: (ctx) => ctx.answers.dedupeFound === true && !ctx.answers.creditScore && realBureauFlowEnabled && isIndividualPan(ctx.answers.pan as string | undefined),
+      botMessage: (ctx) => `We've sent a 6-digit code to +91 ${maskMobile(ctx.answers.mobile as string)} — entering it gives us your consent to pull your credit bureau report.`,
+      input: () => ({ type: 'otp', length: 6 }),
+      validate: (value) => {
+        const v = (value || '').replace(/\s/g, '');
+        if (!/^\d{6}$/.test(v)) return { ok: false, error: 'Enter all 6 digits.' };
+        return { ok: true, parsed: v };
+      },
+      onAnswer: async (parsed, ctx) => {
+        const a = ctx.answers;
+        const token = a.finfinityAccessToken as string;
+        let pull: BureauPull;
+        try {
+          pull =
+            a.bureauRealType === 'CIBIL'
+              ? await realBureauApi.validateBureauCibil({
+                  customerId: a.bureauRealCustomerId as number,
+                  otpSessionId: a.bureauRealOtpSessionId as string,
+                  phoneNumber: a.mobile as string,
+                  questionKey: a.bureauRealQuestionKey as string,
+                  answerKey: a.bureauRealAnswerKey as string,
+                  challengeConfigGuid: a.bureauRealChallengeGuid as string,
+                  otp: parsed as string,
+                  token,
+                })
+              : await realBureauApi.validateBureauExperian({
+                  customerId: a.bureauRealCustomerId as number,
+                  otpSessionId: a.bureauRealOtpSessionId as string,
+                  phoneNumber: a.mobile as string,
+                  otp: parsed as string,
+                  token,
+                });
+        } catch (err) {
+          logger.error({ err, event: 'bureau_real_validate_failed' }, 'validatebureau failed');
+          throw new Error('Incorrect OTP. Please try again.');
+        }
+        return {
+          creditScore: pull.creditScore,
+          bureauSource: pull.source,
+          ...(pull.accessToken ? { finfinityAccessToken: pull.accessToken } : {}),
+          ...(pull.refreshToken ? { finfinityRefreshToken: pull.refreshToken } : {}),
+        };
+      },
+    },
     {
       id: 'bureauFetchFound',
       type: 'apiFetch',
       progressLabel: 'Checking credit profile',
-      isApplicable: (ctx) => ctx.answers.dedupeFound === true && !ctx.answers.creditScore && isIndividualPan(ctx.answers.pan as string | undefined),
+      // Gated on its OWN bureauScoreShown flag, not creditScore — the real path above now sets
+      // creditScore BEFORE this step is reached (unlike the mock path, which only sets it here), so
+      // gating on creditScore itself would skip this step (and its caching + message) for the real
+      // path entirely.
+      isApplicable: (ctx) => ctx.answers.dedupeFound === true && !ctx.answers.bureauScoreShown && isIndividualPan(ctx.answers.pan as string | undefined),
       botMessage: (ctx) => `Your CIBIL score is <strong>${ctx.answers.creditScore}</strong>.`,
       input: () => ({ type: 'none' }),
       onAnswer: async (_parsed, ctx) => {
-        const pull = await bureauService.pull(ctx.answers.pan as string, {
-          dob: ctx.answers.dob as string | undefined,
-          pincode: ctx.answers.pincode as string | undefined,
-          email: ctx.answers.email as string | undefined,
-        });
-        if (ctx.answers.customerId) await customerService.updateMissingField(ctx.answers.customerId as string, 'creditScore', pull.creditScore);
+        let creditScore = ctx.answers.creditScore as number | undefined;
+        let bureauSource = ctx.answers.bureauSource as 'bureau' | 'experian' | undefined;
+        if (creditScore === undefined) {
+          // Mock path only — the real interactive flow above already set these.
+          const pull = await bureauService.pull(ctx.answers.pan as string, {
+            dob: ctx.answers.dob as string | undefined,
+            pincode: ctx.answers.pincode as string | undefined,
+            email: ctx.answers.email as string | undefined,
+          });
+          creditScore = pull.creditScore;
+          bureauSource = pull.source;
+        }
+        if (ctx.answers.customerId) await customerService.updateMissingField(ctx.answers.customerId as string, 'creditScore', creditScore);
         // Real dedupe-found customers never get a local customerId (see dedupe.service.ts), so
         // the line above is a no-op for them — cache by mobileHash instead, so dedupeCheck can
         // find it next time and skip this whole OTP for a customer we've already scored.
-        await customerService.cacheBureauScore(
-          hmacLookup(ctx.answers.mobile as string),
-          maskMobile(ctx.answers.mobile as string),
-          pull.creditScore,
-          pull.source,
-        );
-        return { creditScore: pull.creditScore, bureauSource: pull.source };
+        await customerService.cacheBureauScore(hmacLookup(ctx.answers.mobile as string), maskMobile(ctx.answers.mobile as string), creditScore, bureauSource as 'bureau' | 'experian');
+        return { creditScore, bureauSource, bureauScoreShown: true };
       },
     },
     // ---------- not-found branch: same OTP #2 (bureau/PAN consent), then reveal the credit score ----------
@@ -1362,7 +1568,7 @@ export const homeLoanFlow: FlowDefinition = {
       id: 'triggerOtpBureauNotFound',
       type: 'apiFetch',
       progressLabel: 'Verifying identity',
-      isApplicable: (ctx) => ctx.answers.dedupeFound === false && isIndividualPan(ctx.answers.pan as string | undefined),
+      isApplicable: (ctx) => ctx.answers.dedupeFound === false && !realBureauFlowEnabled && isIndividualPan(ctx.answers.pan as string | undefined),
       botMessage: () => null,
       input: () => ({ type: 'none' }),
       onAnswer: async (_parsed, ctx) => {
@@ -1373,7 +1579,7 @@ export const homeLoanFlow: FlowDefinition = {
       id: 'otpBureauNotFound',
       type: 'otp',
       progressLabel: 'Verifying identity',
-      isApplicable: (ctx) => ctx.answers.dedupeFound === false && isIndividualPan(ctx.answers.pan as string | undefined),
+      isApplicable: (ctx) => ctx.answers.dedupeFound === false && !realBureauFlowEnabled && isIndividualPan(ctx.answers.pan as string | undefined),
       botMessage: (ctx) => `We've sent a 6-digit code to +91 ${maskMobile(ctx.answers.mobile as string)} — entering it gives us your consent to pull your credit bureau report.`,
       input: () => ({ type: 'otp', length: 6 }),
       validate: (value) => {
@@ -1397,6 +1603,84 @@ export const homeLoanFlow: FlowDefinition = {
         return {
           ...(result.accessToken ? { finfinityAccessToken: result.accessToken } : {}),
           ...(result.refreshToken ? { finfinityRefreshToken: result.refreshToken } : {}),
+        };
+      },
+    },
+    // ---------- Real interactive bureau check, not-found branch — see the found-branch's own
+    // comment above (triggerBureauRealFound) for the full explanation. ----------
+    {
+      id: 'triggerBureauRealNotFound',
+      type: 'apiFetch',
+      progressLabel: 'Verifying identity',
+      isApplicable: (ctx) => ctx.answers.dedupeFound === false && realBureauFlowEnabled && isIndividualPan(ctx.answers.pan as string | undefined),
+      botMessage: () => null,
+      input: () => ({ type: 'none' }),
+      onAnswer: async (_parsed, ctx) => {
+        const resp = await realBureauApi.generateBureau({
+          pan: ctx.answers.pan as string,
+          phoneNumber: ctx.answers.mobile as string,
+          officialEmail: ctx.answers.email as string,
+          pincode: ctx.answers.pincode as string,
+          applicantTypeKey: mapSegmentToHlEmploymentType(ctx.answers.segment as string | undefined),
+          token: ctx.answers.finfinityAccessToken as string,
+        });
+        return resp.bureau_type === 'CIBIL'
+          ? {
+              bureauRealType: 'CIBIL' as const,
+              bureauRealCustomerId: resp.customer_id,
+              bureauRealOtpSessionId: resp.otp_session_id,
+              bureauRealQuestionKey: resp.questionKey,
+              bureauRealAnswerKey: resp.answerKey,
+              bureauRealChallengeGuid: resp.ChallengeConfigGUID,
+            }
+          : { bureauRealType: 'EXPERIAN' as const, bureauRealCustomerId: resp.customer_id, bureauRealOtpSessionId: resp.otp_session_id };
+      },
+    },
+    {
+      id: 'otpBureauRealNotFound',
+      type: 'otp',
+      progressLabel: 'Verifying identity',
+      isApplicable: (ctx) => ctx.answers.dedupeFound === false && realBureauFlowEnabled && isIndividualPan(ctx.answers.pan as string | undefined),
+      botMessage: (ctx) => `We've sent a 6-digit code to +91 ${maskMobile(ctx.answers.mobile as string)} — entering it gives us your consent to pull your credit bureau report.`,
+      input: () => ({ type: 'otp', length: 6 }),
+      validate: (value) => {
+        const v = (value || '').replace(/\s/g, '');
+        if (!/^\d{6}$/.test(v)) return { ok: false, error: 'Enter all 6 digits.' };
+        return { ok: true, parsed: v };
+      },
+      onAnswer: async (parsed, ctx) => {
+        const a = ctx.answers;
+        const token = a.finfinityAccessToken as string;
+        let pull: BureauPull;
+        try {
+          pull =
+            a.bureauRealType === 'CIBIL'
+              ? await realBureauApi.validateBureauCibil({
+                  customerId: a.bureauRealCustomerId as number,
+                  otpSessionId: a.bureauRealOtpSessionId as string,
+                  phoneNumber: a.mobile as string,
+                  questionKey: a.bureauRealQuestionKey as string,
+                  answerKey: a.bureauRealAnswerKey as string,
+                  challengeConfigGuid: a.bureauRealChallengeGuid as string,
+                  otp: parsed as string,
+                  token,
+                })
+              : await realBureauApi.validateBureauExperian({
+                  customerId: a.bureauRealCustomerId as number,
+                  otpSessionId: a.bureauRealOtpSessionId as string,
+                  phoneNumber: a.mobile as string,
+                  otp: parsed as string,
+                  token,
+                });
+        } catch (err) {
+          logger.error({ err, event: 'bureau_real_validate_failed' }, 'validatebureau failed');
+          throw new Error('Incorrect OTP. Please try again.');
+        }
+        return {
+          creditScore: pull.creditScore,
+          bureauSource: pull.source,
+          ...(pull.accessToken ? { finfinityAccessToken: pull.accessToken } : {}),
+          ...(pull.refreshToken ? { finfinityRefreshToken: pull.refreshToken } : {}),
         };
       },
     },
@@ -1429,14 +1713,18 @@ export const homeLoanFlow: FlowDefinition = {
         // OTP consent steps right before this are already skipped for a non-individual PAN (see
         // triggerOtpBureauNotFound/otpBureauNotFound), so there's no consent to act on here either;
         // skip the real pull entirely rather than calling it anyway with no OTP ever having run.
+        // The real interactive flow above already set creditScore for this conversation before this
+        // step is ever reached — only the mock path (triggerOtpBureauNotFound/otpBureauNotFound)
+        // leaves it unset here, needing this fallback call.
         const isIndividual = isIndividualPan(ctx.answers.pan as string | undefined);
-        const pull = isIndividual
-          ? await bureauService.pull(ctx.answers.pan as string, {
-              dob: ctx.answers.dob as string | undefined,
-              pincode: ctx.answers.pincode as string | undefined,
-              email: ctx.answers.email as string | undefined,
-            })
-          : undefined;
+        const pull =
+          isIndividual && ctx.answers.creditScore === undefined
+            ? await bureauService.pull(ctx.answers.pan as string, {
+                dob: ctx.answers.dob as string | undefined,
+                pincode: ctx.answers.pincode as string | undefined,
+                email: ctx.answers.email as string | undefined,
+              })
+            : undefined;
         // Replaces the masked name panFetch showed with the real one, now that both OTPs
         // (identity, then bureau consent) are cleared — same bar the dedupe-found branch clears
         // with just its one OTP before ever storing the real name. Updating the actual answers.name
@@ -1480,7 +1768,10 @@ export const homeLoanFlow: FlowDefinition = {
       id: 'product',
       type: 'choice',
       progressLabel: 'Choosing a product',
-      isApplicable: (ctx) => isEligibilityIntent(ctx.answers),
+      // !ctx.answers.product: an SDK launch token (see externalLaunch.service.ts) can pre-seed this
+      // when Finfinity's own app already knows what the customer picked before opening the widget —
+      // without this guard, applicablePath/firstStepId would still land here and ask again.
+      isApplicable: (ctx) => isEligibilityIntent(ctx.answers) && !ctx.answers.product,
       botMessage: () => 'What are you looking for?',
       // Business Loan doesn't work for a salaried customer at all (2026-10-17 instruction) — hidden
       // from the options entirely rather than offered and then rejected deeper into its own flow.
@@ -1495,7 +1786,7 @@ export const homeLoanFlow: FlowDefinition = {
       id: 'loanType',
       type: 'choice',
       progressLabel: 'Choosing a product',
-      isApplicable: (ctx) => isEligibilityIntent(ctx.answers) && isHomeLoanOrLap(ctx.answers) && isIndividualPan(ctx.answers.pan as string | undefined),
+      isApplicable: (ctx) => isEligibilityIntent(ctx.answers) && isHomeLoanOrLap(ctx.answers) && isIndividualPan(ctx.answers.pan as string | undefined) && !ctx.answers.loanType,
       botMessage: (ctx) => {
         const options = LOAN_TYPES[ctx.answers.product as string] ?? [];
         return `Got it — <strong>${ctx.answers.product}</strong>. What type of loan is this: ${options.join(' or ')}?`;

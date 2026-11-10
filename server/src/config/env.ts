@@ -106,6 +106,36 @@ const EnvSchema = z.object({
   // every /admin/* request outright rather than leaving it silently open (same fail-closed spirit
   // as assertProductionSafe below).
   ADMIN_TOKEN: z.string().optional().default(''),
+  // Shared secret for the SDK launch-token handoff (see services/launchToken.service.ts) — a
+  // partner's own backend (Finfinity's own app today; CIS or others later) encrypts a customer's
+  // product/mobile/email with this exact secret to prove the data came from them, with NO API call
+  // to us involved at all (2026-11-02 design — replaced an earlier issue-then-redeem endpoint that
+  // added a network round-trip right when the customer clicked to open the chat). Left unset, every
+  // partner effectively shares the same (empty-string-derived) key, which is fine for solo local
+  // testing but means ANY two parties with that same default could decrypt each other's tokens — set
+  // a real random value before handing this out to an actual partner.
+  EXTERNAL_SDK_SECRET: z.string().optional().default(''),
+
+  // A dedicated "always safe" test identity (2026-11-05) — for a Google Play reviewer (or anyone
+  // else) to walk the full loan journey, including in production, without ever hitting a real
+  // bureau pull or a real lender submission. A customer whose PAN/mobile matches these gets routed
+  // to the mock PAN/bureau/OTP services regardless of the global FINFINITY_*_MOCK_OVERRIDE flags
+  // (which apply to ALL traffic) — see config/sandbox.ts. Left unset, nothing changes for anyone.
+  SANDBOX_TEST_PAN: z.string().optional().default(''),
+  SANDBOX_TEST_MOBILE: z.string().optional().default(''),
+
+  // CIS's own CRM webhook (2026-11-06, UAT values from Sai) — fired once per newly-created real
+  // lead (see services/webhook.service.ts + lead.service.ts's ensureLeadOnce). Left unset, nothing
+  // fires — safe no-op everywhere except where/when CIS's URL is actually configured.
+  CIS_WEBHOOK_URL: z.string().optional().default(''),
+  CIS_WEBHOOK_HMAC_SECRET: z.string().optional().default(''),
+  CIS_WEBHOOK_BEARER_TOKEN: z.string().optional().default(''),
+
+  // Where lib/logger.ts also writes a daily log file, in addition to stdout — see that file's own
+  // comment. Left unset, defaults to ./logs (relative to the server process's cwd); in prod this
+  // should point at a volume-backed path (see docker-compose.yml's `logs` volume) so it survives a
+  // deploy recreating the container.
+  LOG_DIR: z.string().optional().default(''),
 });
 
 export const env = EnvSchema.parse(process.env);
@@ -128,6 +158,10 @@ function assertProductionSafe() {
   if (env.RM_EMAIL_OVERRIDE_TO) problems.push('RM_EMAIL_OVERRIDE_TO is set — every RM notification email would go to that test address instead of the customer\'s actual assigned RM.');
   if (env.SESSION_HMAC_SECRET.includes('change-me') || env.SESSION_HMAC_SECRET.includes('dev-only')) problems.push('SESSION_HMAC_SECRET still looks like the dev placeholder value — set a real random secret.');
   if (env.PII_ENCRYPTION_KEY.includes('change-me') || env.PII_ENCRYPTION_KEY.includes('dev-only')) problems.push('PII_ENCRYPTION_KEY still looks like the dev placeholder value — set a real random 32-byte key (customer PAN/mobile/DOB/email are encrypted with this; a known key makes that encryption pointless).');
+  // Security-review finding, 2026-11-02: left unset (its default), EXTERNAL_SDK_SECRET derives to
+  // the same key for every partner (see the field's own doc comment above) — any partner who
+  // figured that out could mint a launch token claiming to be any other partner's customer.
+  if (!env.EXTERNAL_SDK_SECRET) problems.push('EXTERNAL_SDK_SECRET is empty — every partner would share the same default-derived encryption key for SDK launch tokens, letting one partner forge another\'s.');
   if (problems.length) {
     // eslint-disable-next-line no-console -- startup-time fatal, before the real logger's transport is guaranteed ready
     console.error(`FATAL: refusing to start in production with unsafe configuration:\n${problems.map((p) => `  - ${p}`).join('\n')}`);

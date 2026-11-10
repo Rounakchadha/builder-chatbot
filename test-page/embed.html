@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Finfinity Eligibility Assistant</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: transparent; }
+</style>
+</head>
+<body>
+  <!-- Bare embed page for native apps (e.g. a Flutter WebView) to load directly — no demo chrome,
+       no buttons, nothing but the widget script itself. data-hide-launcher="true" because the host
+       app's own native button/screen is what opens the widget (via window.__lcWidgetInstance.open(
+       launchToken), injected through the WebView's own JS-evaluation API once this page has
+       loaded) — there is no floating launcher bubble to show here; the WebView itself IS the
+       dedicated chat screen. See the integration guide PDF for the full Flutter example. -->
+  <script src="./widget.js" data-api-base="http://192.168.1.121:8091" data-hide-launcher="true" defer></script>
+</body>
+</html>

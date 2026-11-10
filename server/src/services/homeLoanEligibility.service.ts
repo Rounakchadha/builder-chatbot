@@ -92,6 +92,24 @@ export interface HlEligibilityFacts {
   propertyType: HlPropertyType;
   existingMonthlyEmi?: number;
   proposedMonthlyEmi?: number;
+
+  // Credit-behavior facts (confirmed 2026-11-02 on the pre-check side) — see that project's
+  // types.ts for the full per-field meaning and which of its two lender groups reads which. None
+  // of these are collected anywhere in this flow yet (no real bureau pull exists here — see
+  // FINFINITY_BUREAU_MOCK_OVERRIDE), so they stay undefined for now, same "dummy until real values
+  // exist" situation as personalLoanEligibility.service.ts's bureau-depth facts.
+  hasOverdueOnActiveLoan?: boolean;
+  hasOverdueOnActiveLoanExclAgriKccGl?: boolean;
+  dpd90PlusLast24Months?: boolean;
+  dpd30PlusLast12MonthsExclCcAndSmallOs?: boolean;
+  dpd30PlusLast6MonthsExclAgriKccGlCcAndSmallOs?: boolean;
+  dpdAnyInLast15Days?: boolean;
+  dpdOccurrencesLast6Months?: number;
+  dpdOccurrencesLast3Months?: number;
+  hasDisqualifyingSettlementOrWriteOffGroupA?: boolean;
+  hasDisqualifyingSettlementOrWriteOffGroupB?: boolean;
+  hasSuitFiledOrWillfulDefaulter?: boolean;
+  inquiriesLast6MonthsForHl?: number;
 }
 
 export interface HlLenderEligibility {

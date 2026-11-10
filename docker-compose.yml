@@ -6,7 +6,12 @@ services:
       POSTGRES_PASSWORD: loanbot
       POSTGRES_DB: loanbot_v1
     ports:
-      - '5435:5432'
+      # Security-review finding, 2026-11-02: bound to all interfaces before this, so Postgres was
+      # reachable from the open internet on :5435, not just this host — rebound to localhost-only.
+      # The server container still reaches it fine (same Docker network, internal DNS), this only
+      # affects connections coming from OUTSIDE the host. To debug from your own machine, SSH-tunnel
+      # in instead (e.g. `ssh -L 5435:localhost:5435 rounak_uat@200.97.170.143`).
+      - '127.0.0.1:5435:5432'
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -18,7 +23,8 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - '6381:6379'
+      # Same fix as postgres above — was reachable from outside the host on :6381, now localhost-only.
+      - '127.0.0.1:6381:6379'
     healthcheck:
       test: ['CMD', 'redis-cli', 'ping']
       interval: 5s
@@ -43,8 +49,15 @@ services:
       # production or once real customer PII is flowing — the proper fix is adding whatever CA
       # certificate is actually doing the interception to the container's trusted store instead.
       NODE_TLS_REJECT_UNAUTHORIZED: '0'
+      # Bug fixed 2026-11-07 — logs used to only live in the container's own stdout, which `deploy.sh`
+      # throws away every time it recreates this container (see lib/logger.ts's own comment on why).
+      # Pointed at a named volume (below) instead of the container's writable layer, so a deploy no
+      # longer erases everything that happened before it.
+      LOG_DIR: /app/server/logs
     ports:
       - '8091:8080'
+    volumes:
+      - serverlogs:/app/server/logs
     depends_on:
       postgres:
         condition: service_healthy
@@ -65,3 +78,4 @@ services:
 
 volumes:
   pgdata:
+  serverlogs:

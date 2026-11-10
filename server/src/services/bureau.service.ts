@@ -1,4 +1,5 @@
 import { env } from '../config/env';
+import { isSandboxPan } from '../config/sandbox';
 import { hashCode } from '../flow-engine/eligibility';
 import { maskPan } from '../lib/crypto';
 import { logger } from '../lib/logger';
@@ -84,18 +85,29 @@ export interface BureauPull {
  * that step, once designed, has something to call. */
 export interface RealBureauApi {
   generateBureau(input: GenerateBureauInput): Promise<GenerateBureauResponse>;
-  validateBureauCibil(input: { customerId: number; otpSessionId: string; phoneNumber: string; questionKey: string; answerKey: string; challengeConfigGuid: string; token: string }): Promise<BureauPull>;
+  // otp added 2026-11-06 (confirmed live by Ritendra, not in bureau_api_payloads.txt) — generatebureau
+  // ALSO sends an OTP for the CIBIL path, same as Experian; the customer only ever enters that OTP,
+  // never the questionKey/answerKey/ChallengeConfigGUID themselves — those are passed through here
+  // automatically from whatever generateBureau() returned, never shown to or asked of the customer.
+  validateBureauCibil(input: { customerId: number; otpSessionId: string; phoneNumber: string; questionKey: string; answerKey: string; challengeConfigGuid: string; otp: string; token: string }): Promise<BureauPull>;
   validateBureauExperian(input: { customerId: number; otpSessionId: string; phoneNumber: string; otp: string; token: string }): Promise<BureauPull>;
   /** Reads back bureau data ALREADY on file for this customer/product — does not trigger a new
-   * pull. See fetchBureauData's own doc comment for the full caveat on the response shape. */
-  fetchBureauData(input: { customerId: number; productCode: string; token: string }): Promise<BureauPull | null>;
+   * pull. See fetchBureauData's own doc comment for the full caveat on the response shape. `pan`
+   * added 2026-11-07 — confirmed by a real prod example from Ritendra/Bitsflow that the request
+   * includes it alongside customer_id/product_code; the stitched-in 2026-10-31 version never sent
+   * it (see the 2026-10-31 confirmed-empty-response test, which also never sent it and still got a
+   * clean response — so this was a real gap, not something that happened to still work by luck). */
+  fetchBureauData(input: { customerId: number; productCode: string; pan: string; token: string }): Promise<BureauPull | null>;
 }
 
 interface ValidateBureauResponse {
   ReferenceKey?: string;
   stageOneId?: string;
   stageTwoId?: string;
-  bureauScore: number;
+  // Confirmed live (2026-11-06, real CIBIL pull against UAT): this comes back as a STRING ("789"),
+  // not a number like bureau_api_payloads.txt's sample shows — coerced with Number() at both call
+  // sites below rather than trusted as-is.
+  bureauScore: number | string;
   bureauType: 'CIBIL' | 'EXPERIAN';
 }
 
@@ -134,10 +146,11 @@ export const realBureauApi: RealBureauApi = {
         questionKey: input.questionKey,
         answerKey: input.answerKey,
         ChallengeConfigGUID: input.challengeConfigGuid,
+        otp: input.otp,
       },
       { token: input.token, retryOnTransient: false },
     );
-    return { creditScore: results[0].bureauScore, source: 'bureau', accessToken: results[1]?.access, refreshToken: results[1]?.refresh };
+    return { creditScore: Number(results[0].bureauScore), source: 'bureau', accessToken: results[1]?.access, refreshToken: results[1]?.refresh };
   },
   async validateBureauExperian(input) {
     const results = await finfinityClient.post<[ValidateBureauResponse, { access: string; refresh: string }]>(
@@ -151,7 +164,7 @@ export const realBureauApi: RealBureauApi = {
       },
       { token: input.token, retryOnTransient: false },
     );
-    return { creditScore: results[0].bureauScore, source: 'experian', accessToken: results[1]?.access, refreshToken: results[1]?.refresh };
+    return { creditScore: Number(results[0].bureauScore), source: 'experian', accessToken: results[1]?.access, refreshToken: results[1]?.refresh };
   },
   // STITCHED IN 2026-10-31 ON AN UNCONFIRMED RESPONSE SHAPE — user said "stitch it for now, I'll
   // ask Bitsflow how this works" and will confirm the real shape later. Confirmed LIVE (not
@@ -172,7 +185,7 @@ export const realBureauApi: RealBureauApi = {
       error_msg?: string;
     }>(
       '/leadflow/fetchbureaudata',
-      { customer_id: input.customerId, product_code: input.productCode },
+      { customer_id: input.customerId, product_code: input.productCode, pan: input.pan },
       { token: input.token, retryOnTransient: false },
     );
 
@@ -204,7 +217,7 @@ export const realBureauApi: RealBureauApi = {
  * be implemented as a drop-in swap the way Dedupe/PAN/Lead/Status could be. generateBureau() and
  * validateBureauCibil/Experian() above are ready for whenever that step gets designed. */
 class RealBureauService implements BureauService {
-  async pull(_pan: string, context?: BureauPullContext): Promise<BureauPull> {
+  async pull(pan: string, context?: BureauPullContext): Promise<BureauPull> {
     // Best-effort cheap check (2026-10-31, unconfirmed shape — see fetchBureauData's own comment):
     // if the caller already has a customerId/token (e.g. a lead already created this conversation)
     // and this customer happens to already have a completed real bureau pull on file, use it
@@ -212,7 +225,7 @@ class RealBureauService implements BureauService {
     // every other case — a brand-new customer with no prior pull, which is still every customer
     // today, since the interactive generatebureau/validatebureau step isn't wired into the flow yet.
     if (context?.customerId && context?.token) {
-      const fetched = await realBureauApi.fetchBureauData({ customerId: context.customerId, productCode: context.productCode ?? 'PL', token: context.token }).catch((err) => {
+      const fetched = await realBureauApi.fetchBureauData({ customerId: context.customerId, productCode: context.productCode ?? 'PL', pan, token: context.token }).catch((err) => {
         logger.warn({ err, event: 'bureau_fetch_failed' }, 'fetchbureaudata call failed — falling back to the usual "not implemented" error');
         return null;
       });
@@ -227,5 +240,20 @@ class RealBureauService implements BureauService {
   }
 }
 
+// Same condition that picks RealBureauService over the mock below — exported so flows/homeLoan.ts
+// can pick between the real interactive generatebureau/validatebureau steps (2026-11-06) and the
+// old placeholder single-OTP-then-mock-score path. A SANDBOX_TEST_PAN/MOBILE customer still always
+// gets the mock regardless (see bureauService's own routing below) — this flag only decides which
+// UI path a NON-sandbox customer goes through.
+export const realBureauFlowEnabled = Boolean(env.FINFINITY_API_BASE_URL) && !env.FINFINITY_BUREAU_MOCK_OVERRIDE;
+
 // See FINFINITY_BUREAU_MOCK_OVERRIDE's comment in config/env.ts — temporary, test-only.
-export const bureauService: BureauService = env.FINFINITY_API_BASE_URL && !env.FINFINITY_BUREAU_MOCK_OVERRIDE ? new RealBureauService() : new MockBureauService();
+const configuredBureauService: BureauService = env.FINFINITY_API_BASE_URL && !env.FINFINITY_BUREAU_MOCK_OVERRIDE ? new RealBureauService() : new MockBureauService();
+const sandboxBureauService: BureauService = new MockBureauService();
+
+// SANDBOX_TEST_PAN (see config/sandbox.ts) always gets a mock score, even when
+// configuredBureauService above is the real one — a Google reviewer's test PAN never triggers a
+// real CIBIL/Experian pull, in production or anywhere else.
+export const bureauService: BureauService = {
+  pull: (pan, context) => (isSandboxPan(pan) ? sandboxBureauService.pull(pan, context) : configuredBureauService.pull(pan, context)),
+};

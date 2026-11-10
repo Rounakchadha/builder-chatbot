@@ -1,29 +1,5 @@
 import type { EligibilityResultPayload, LenderOffer } from '@builder-chatbot/shared';
 import { ICON } from './icons';
-import poonawalaLogo from './assets/lenders/poonawala-fincorp.svg';
-import tataCapitalLogo from './assets/lenders/tata-capital.svg';
-import unityLogo from './assets/lenders/unity-small-finance-bank.png';
-import hdfcLogo from './assets/lenders/hdfc-bank.png';
-import iciciLogo from './assets/lenders/icici-bank.png';
-import sbiLogo from './assets/lenders/sbi-home-loans.png';
-import axisLogo from './assets/lenders/axis-bank.png';
-import kotakLogo from './assets/lenders/kotak-mahindra-bank.png';
-import bajajHousingLogo from './assets/lenders/bajaj-housing-finance.png';
-import licHousingLogo from './assets/lenders/lic-housing-finance.png';
-import pnbHousingLogo from './assets/lenders/pnb-housing-finance.png';
-import federalBankLogo from './assets/lenders/federal-bank.png';
-import hsbcLogo from './assets/lenders/hsbc.png';
-import jioCreditLogo from './assets/lenders/jio-credit.png';
-import rblBankLogo from './assets/lenders/rbl-bank.png';
-import idfcFirstLogo from './assets/lenders/idfc-first-bank.png';
-import iiflLogo from './assets/lenders/iifl.png';
-import piramalFinanceLogo from './assets/lenders/piramal-finance.png';
-import adityaBirlaLogo from './assets/lenders/aditya-birla.png';
-import bajajFinservLogo from './assets/lenders/bajaj-finserv.svg';
-import indusindBankLogo from './assets/lenders/indusind-bank.svg';
-import cholamandalamLogo from './assets/lenders/cholamandalam.svg';
-import heroFincorpLogo from './assets/lenders/hero-fincorp.svg';
-import fullertonLogo from './assets/lenders/fullerton.svg';
 
 function initials(name: string): string {
   return name.split(' ').map((w) => w[0]).join('').slice(0, 2).toUpperCase();
@@ -48,51 +24,57 @@ function initials(name: string): string {
  * crop-to-circle badge; once that badge switched to "contain, don't crop" for Personal Loan's wide
  * wordmark logos, those three looked boxed-in/wrong, so they were replaced with cleaner official
  * ones at the same time). */
+// Values are filenames only (not imports) — the actual image files live in test-page/assets/lenders/
+// on the server, served statically and fetched by ABSOLUTE url (see logoHtml below). They used to be
+// imported here and inlined as base64 straight into this JS bundle, which alone made the bundle
+// huge (security-review finding, 2026-11-02) — a relative path wouldn't work here since this
+// widget's HTML gets injected into an arbitrary partner's page, so any image url has to be absolute
+// against our own API server, never relative to wherever the script happens to be embedded.
 const LENDER_LOGOS: Record<string, string> = {
-  'Poonawala Fincorp': poonawalaLogo,
+  'Poonawala Fincorp': 'poonawala-fincorp.svg',
   // Personal Loan's real financerwiseeligibility chain spells this one differently (2026-10-21) —
   // "Poonawalla" (double L) + "Limited" suffix, same lender, same logo.
-  'Poonawalla Fincorp Limited': poonawalaLogo,
-  'Tata Capital': tataCapitalLogo,
-  'Tata Capital Housing': tataCapitalLogo,
-  'Unity Small Finance Bank': unityLogo,
-  'Unity Bank': unityLogo,
-  'HDFC Bank': hdfcLogo,
-  'ICICI Bank': iciciLogo,
-  'ICICI HFC': iciciLogo,
-  'SBI Home Loans': sbiLogo,
-  'Axis Bank': axisLogo,
-  'Kotak Mahindra Bank': kotakLogo,
-  'Kotak Bank': kotakLogo,
-  'Bajaj Housing Finance': bajajHousingLogo,
-  'Bajaj Finserv': bajajFinservLogo,
-  'LIC Housing Finance': licHousingLogo,
-  'PNB Housing Finance': pnbHousingLogo,
-  'PNB Housing': pnbHousingLogo,
-  'Federal Bank': federalBankLogo,
-  'HSBC': hsbcLogo,
-  'Jio Credit Limited': jioCreditLogo,
-  'RBL Bank': rblBankLogo,
-  'IDFC First Bank': idfcFirstLogo,
-  'IDFC Bank': idfcFirstLogo,
-  'IIFL': iiflLogo,
-  'Piramal Housing': piramalFinanceLogo,
-  'Piramal Finance': piramalFinanceLogo,
-  'Piramal': piramalFinanceLogo,
-  'Aditya Birla Housing Finance': adityaBirlaLogo,
-  'Aditya Birla Finance': adityaBirlaLogo,
-  'IndusInd Bank': indusindBankLogo,
-  'Chola': cholamandalamLogo,
-  'Hero Fincorp': heroFincorpLogo,
+  'Poonawalla Fincorp Limited': 'poonawala-fincorp.svg',
+  'Tata Capital': 'tata-capital.svg',
+  'Tata Capital Housing': 'tata-capital.svg',
+  'Unity Small Finance Bank': 'unity-small-finance-bank.png',
+  'Unity Bank': 'unity-small-finance-bank.png',
+  'HDFC Bank': 'hdfc-bank.png',
+  'ICICI Bank': 'icici-bank.png',
+  'ICICI HFC': 'icici-bank.png',
+  'SBI Home Loans': 'sbi-home-loans.png',
+  'Axis Bank': 'axis-bank.png',
+  'Kotak Mahindra Bank': 'kotak-mahindra-bank.png',
+  'Kotak Bank': 'kotak-mahindra-bank.png',
+  'Bajaj Housing Finance': 'bajaj-housing-finance.png',
+  'Bajaj Finserv': 'bajaj-finserv.svg',
+  'LIC Housing Finance': 'lic-housing-finance.png',
+  'PNB Housing Finance': 'pnb-housing-finance.png',
+  'PNB Housing': 'pnb-housing-finance.png',
+  'Federal Bank': 'federal-bank.png',
+  'HSBC': 'hsbc.png',
+  'Jio Credit Limited': 'jio-credit.png',
+  'RBL Bank': 'rbl-bank.png',
+  'IDFC First Bank': 'idfc-first-bank.png',
+  'IDFC Bank': 'idfc-first-bank.png',
+  'IIFL': 'iifl.png',
+  'Piramal Housing': 'piramal-finance.png',
+  'Piramal Finance': 'piramal-finance.png',
+  'Piramal': 'piramal-finance.png',
+  'Aditya Birla Housing Finance': 'aditya-birla.png',
+  'Aditya Birla Finance': 'aditya-birla.png',
+  'IndusInd Bank': 'indusind-bank.svg',
+  'Chola': 'cholamandalam.svg',
+  'Hero Fincorp': 'hero-fincorp.svg',
   // Fullerton India rebranded to SMFG India Credit (2021, after SMBC/Sumitomo Mitsui acquired it) —
   // same company the real chain's "Fullerton" name still refers to, so its current official logo is
   // the accurate one to show, sourced directly from smfgindiacredit.com's own site header.
-  'Fullerton': fullertonLogo,
+  'Fullerton': 'fullerton.svg',
 };
 
-function logoHtml(name: string): string {
+function logoHtml(name: string, apiBase: string): string {
   const logo = LENDER_LOGOS[name];
-  return logo ? `<img src="${logo}" alt="${name}" />` : initials(name);
+  return logo ? `<img src="${apiBase}/assets/lenders/${logo}" alt="${name}" />` : initials(name);
 }
 
 /** Replaces the lender list once an offer's selected (see wireSelectOfferButtons in app.ts) —
@@ -100,10 +82,10 @@ function logoHtml(name: string): string {
  * accordion list is replaced by this single card) alike. Logo sits in its own white badge (not the
  * circular avatar the live offer cards use) so a wide wordmark logo — most real lender logos are
  * lockups, not icons — renders in full instead of being cropped by a circle. */
-export function lenderThankYouHtml(lenderName: string, rmName?: string): string {
+export function lenderThankYouHtml(lenderName: string, apiBase: string, rmName?: string): string {
   return `
     <div class="lc-offer-thank-you">
-      <div class="lc-offer-thank-you-logo">${logoHtml(lenderName)}</div>
+      <div class="lc-offer-thank-you-logo">${logoHtml(lenderName, apiBase)}</div>
       <div class="lc-offer-thank-you-text">
         <div class="lc-offer-thank-you-title">You're all set with <strong>${lenderName}</strong></div>
         <div class="lc-offer-thank-you-sub">${rmName ?? 'Our relationship manager'} will reach out to you shortly.</div>
@@ -158,11 +140,11 @@ function collapsedPillHtml(result: EligibilityResultPayload): string {
  * behind "submit" yet — clicking it just swaps it for a confirmation message (see
  * wireGoldSubmitCard in app.ts). Fees has no real data source yet either; shown as a placeholder
  * range for visual completeness, same "dummy for now" spirit as the rest of Gold loan's eligibility. */
-function goldSubmitCardHtml(best: LenderOffer, isEstimate?: boolean): string {
+function goldSubmitCardHtml(best: LenderOffer, apiBase: string, isEstimate?: boolean): string {
   return `
     <button class="lc-gold-submit-card" id="lc-gold-submit-card" type="button" data-lender="${best.name}" data-amount-lakh="${best.amountLakh}">
       <div class="lc-gold-submit-top">
-        <div class="lc-gold-submit-logo">${logoHtml(best.name)}</div>
+        <div class="lc-gold-submit-logo">${logoHtml(best.name, apiBase)}</div>
         <div class="lc-gold-submit-lender">${best.name}</div>
         ${isEstimate ? '<span class="lc-best-tag">Estimate</span>' : ''}
       </div>
@@ -202,7 +184,7 @@ function renderLasResultCard(result: EligibilityResultPayload): string {
  * check complete" badge, no sanction block, no per-lender list, no collapse/minimize) — just the
  * one lender's submit card, and the RM card below it. There's only ever one lender (Muthoot) for
  * gold loan, so the usual "compare across lenders" framing doesn't apply here at all. */
-function renderGoldResultCard(result: EligibilityResultPayload): string {
+function renderGoldResultCard(result: EligibilityResultPayload, apiBase: string): string {
   const best = result.offers?.[0];
 
   if (!result.eligible || !best) {
@@ -223,7 +205,7 @@ function renderGoldResultCard(result: EligibilityResultPayload): string {
 
   return `
     <div id="lc-result-expanded">
-      <div id="lc-gold-submit-slot">${goldSubmitCardHtml(best, result.isEstimate)}</div>
+      <div id="lc-gold-submit-slot">${goldSubmitCardHtml(best, apiBase, result.isEstimate)}</div>
       ${rmCardHtml(result.rm, result.leadId)}
       <div id="lc-pan-offer"></div>
       ${DISCLAIMER}
@@ -234,13 +216,15 @@ function renderGoldResultCard(result: EligibilityResultPayload): string {
 
 /** One lender's offer, styled as a big light card (same visual language as Gold loan's submit
  * card — see goldSubmitCardHtml) instead of the compact click-to-expand row the other products
- * use. Purely informational here (no "tap to submit" — Personal loan has three lenders to
- * compare, not one to act on), so EMI/tenure are shown directly rather than behind an accordion. */
-function personalLoanLenderCardHtml(o: LenderOffer, isBest: boolean): string {
+ * use. Purely informational here (no "tap to submit" — Personal Loan and Home Loan/LAP show
+ * several lenders to compare, not one to act on), so EMI/tenure are shown directly rather than
+ * behind an accordion. Used by both renderPersonalLoanResultCard and the Home Loan/LAP branch of
+ * renderResultCard. */
+function lenderCardHtml(o: LenderOffer, isBest: boolean, apiBase: string): string {
   return `
     <div class="lc-gold-submit-card lc-pl-lender-card" data-pl-lender-card="${o.name}">
       <div class="lc-gold-submit-top">
-        <div class="lc-gold-submit-logo">${logoHtml(o.name)}</div>
+        <div class="lc-gold-submit-logo">${logoHtml(o.name, apiBase)}</div>
         <div class="lc-gold-submit-lender">${o.name}</div>
         ${isBest ? '<span class="lc-best-tag lc-pl-best-tag">Best offer</span>' : ''}
       </div>
@@ -261,7 +245,7 @@ function personalLoanLenderCardHtml(o: LenderOffer, isBest: boolean): string {
 /** Personal loan: a compact headline (no Product/Loan type/CIBIL/Segment grid — those are the
  * same for every lender here, so listing them per-check added nothing) followed by the three
  * lenders as big cards, not the generic accordion-row list. */
-function renderPersonalLoanResultCard(result: EligibilityResultPayload): string {
+function renderPersonalLoanResultCard(result: EligibilityResultPayload, apiBase: string): string {
   const offers = result.offers ?? [];
   const best = offers[0];
 
@@ -281,13 +265,30 @@ function renderPersonalLoanResultCard(result: EligibilityResultPayload): string 
     `;
   }
 
+  // Bug fixed 2026-11-02 ("selected offer vanishes on reload"): once an offer's actually been
+  // picked (persisted server-side, see select-offer's payload.selectedLenderName), jump straight to
+  // the thank-you state instead of the full compare-lenders view — otherwise a page reload looked
+  // like nothing had been selected and asked the customer to pick again.
+  if (result.selectedLenderName) {
+    return `
+      <div id="lc-result-expanded">
+        <div class="lc-badge">${ICON.check} Eligibility check complete</div>
+        ${lenderThankYouHtml(result.selectedLenderName, apiBase, result.rm?.name)}
+        ${rmCardHtml(result.rm, result.leadId)}
+        <div id="lc-pan-offer"></div>
+        ${DISCLAIMER}
+        <button class="lc-ghost-btn" id="lc-btn-restart">Start a new check</button>
+      </div>
+    `;
+  }
+
   return `
     <div id="lc-result-expanded">
       <div class="lc-badge">${ICON.check} Eligibility check complete</div>
       <div class="lc-sanction" id="lc-pl-highest-eligibility">
         <div class="lc-sanction-header">
           <div class="lc-eyebrow">Highest eligibility</div>
-          <div class="lc-sanction-logo">${logoHtml(best.name)}</div>
+          <div class="lc-sanction-logo">${logoHtml(best.name, apiBase)}</div>
         </div>
         <div class="lc-amount">Upto ${formatAmount(best.amountLakh, 'full')}</div>
         <div class="lc-amount-note">with ${best.name}, interest starting from ${best.rate}% p.a. over ${best.tenureYears} years</div>
@@ -295,7 +296,7 @@ function renderPersonalLoanResultCard(result: EligibilityResultPayload): string 
 
       <div class="lc-field-label" style="margin-top:14px">Eligibility by lender</div>
       <div class="lc-lender-list">
-        ${offers.map((o, i) => personalLoanLenderCardHtml(o, i === 0)).join('')}
+        ${offers.map((o, i) => lenderCardHtml(o, i === 0, apiBase)).join('')}
       </div>
 
       ${rmCardHtml(result.rm, result.leadId)}
@@ -306,7 +307,7 @@ function renderPersonalLoanResultCard(result: EligibilityResultPayload): string 
   `;
 }
 
-export function renderResultCard(result: EligibilityResultPayload): string {
+export function renderResultCard(result: EligibilityResultPayload, apiBase: string): string {
   // Segment-gated products stop before any product questions were ever asked — Business Loan
   // excludes salaried applicants (2026-10-17), Personal Loan excludes non-salaried ones
   // (2026-10-21, its real lender eligibility rules only apply to salaried applicants) — so there's
@@ -330,8 +331,8 @@ export function renderResultCard(result: EligibilityResultPayload): string {
     `;
   }
 
-  if (result.product === 'Gold Loan') return renderGoldResultCard(result);
-  if (result.product === 'Personal Loan') return renderPersonalLoanResultCard(result);
+  if (result.product === 'Gold Loan') return renderGoldResultCard(result, apiBase);
+  if (result.product === 'Personal Loan') return renderPersonalLoanResultCard(result, apiBase);
   if (result.product === 'Loan Against Securities') return renderLasResultCard(result);
   // Business Loan never computes eligibility/offers (2026-10-16 direct instruction: "we never
   // calculate eligibility, just capture lead") — same lead-only card as LAS, except when the entity
@@ -374,6 +375,24 @@ export function renderResultCard(result: EligibilityResultPayload): string {
     `;
   }
 
+  // Bug fixed 2026-11-02 ("selected offer vanishes on reload"): same fix as Personal Loan above —
+  // once an offer's actually been picked (persisted server-side), jump straight to the thank-you
+  // state instead of the full compare-lenders view on every later render/reload.
+  if (result.selectedLenderName) {
+    return `
+      ${collapsedPillHtml(result)}
+      <div id="lc-result-expanded">
+        ${minimizeBarHtml()}
+        <div class="lc-badge">${ICON.check} Eligibility check complete</div>
+        ${lenderThankYouHtml(result.selectedLenderName, apiBase, result.rm?.name)}
+        ${rmCardHtml(result.rm, result.leadId)}
+        <div id="lc-pan-offer"></div>
+        ${DISCLAIMER}
+        <button class="lc-ghost-btn" id="lc-btn-restart">Start a new check</button>
+      </div>
+    `;
+  }
+
   const offers = result.offers ?? [];
   const best = offers[0];
   // The property cap (when a property value is known) becomes the headline; the pure
@@ -393,7 +412,7 @@ export function renderResultCard(result: EligibilityResultPayload): string {
           ? `<div class="lc-sanction" id="lc-highest-eligibility">
         <div class="lc-sanction-header">
           <div class="lc-eyebrow">${result.propertyCappedEligibilityLakh !== undefined ? 'Highest eligibility (property-capped)' : 'Highest eligibility'}</div>
-          <div class="lc-sanction-logo">${logoHtml(best.name)}</div>
+          <div class="lc-sanction-logo">${logoHtml(best.name, apiBase)}</div>
         </div>
         <div class="lc-amount">${formatAmount(headlineLakh, 'full')}</div>
         <div class="lc-amount-note">with ${best.name}, at ${best.rate}% p.a. over ${best.tenureYears} years</div>
@@ -414,14 +433,20 @@ export function renderResultCard(result: EligibilityResultPayload): string {
 
       <div class="lc-field-label" id="lc-eligibility-by-lender-label" style="margin-top:14px">Eligibility by lender</div>
       <div class="lc-lender-list" id="lc-lender-list">
-        ${offers
-          .map((o, i) => {
-            const totalPayable = o.emi * o.tenureYears * 12;
-            const totalInterest = Math.max(0, totalPayable - o.amountLakh * 100000);
-            return `
+        ${
+          // Home Loan/LAP: same side-by-side lender comparison cards as Personal Loan, not the
+          // compact accordion rows other products use (direct instruction, 2026-11-02: "like we
+          // had our comparison for the personal loan build that for the home loan too").
+          result.product === 'Home loan' || result.product === 'Loan Against Property'
+            ? offers.map((o, i) => lenderCardHtml(o, i === 0, apiBase)).join('')
+            : offers
+                .map((o, i) => {
+                  const totalPayable = o.emi * o.tenureYears * 12;
+                  const totalInterest = Math.max(0, totalPayable - o.amountLakh * 100000);
+                  return `
           <button class="lc-lender-row ${i === 0 ? 'lc-best' : ''}" type="button" data-lender-toggle="${i}" style="animation-delay:${i * 45}ms">
             <div class="lc-lender-row-left">
-              <div class="lc-lender-logo">${logoHtml(o.name)}</div>
+              <div class="lc-lender-logo">${logoHtml(o.name, apiBase)}</div>
               <div>
                 ${i === 0 ? '<span class="lc-best-tag">Best offer</span>' : ''}
                 <span class="lc-lender-name">${o.name}</span>
@@ -450,12 +475,13 @@ export function renderResultCard(result: EligibilityResultPayload): string {
               <button class="lc-ghost-btn lc-select-offer-btn" type="button" data-select-offer="${o.name}">Select this offer</button>
             </div>
           </div>`;
-          })
-          .join('')}
+                })
+                .join('')
+        }
       </div>
 
       ${rmCardHtml(result.rm, result.leadId)}
-      <div id="lc-gold-submit-slot">${result.product === 'Gold Loan' && result.leadCreated && best ? goldSubmitCardHtml(best, result.isEstimate) : ''}</div>
+      <div id="lc-gold-submit-slot">${result.product === 'Gold Loan' && result.leadCreated && best ? goldSubmitCardHtml(best, apiBase, result.isEstimate) : ''}</div>
       <div id="lc-pan-offer"></div>
       ${DISCLAIMER}
       <button class="lc-ghost-btn" id="lc-btn-restart">Start a new check</button>

@@ -147,6 +147,11 @@ export interface BusinessLoanLeadInput {
 export interface BusinessLoanLeadResult {
   leadId: string;
   rm: { name: string; phone: string; email: string };
+  /** True when an existing real lead for this customer+product was reused instead of a new one
+   * being created (see lead.service.ts's ensureLeadOnce) — undefined on the mock, which has no
+   * cross-conversation identity to dedupe against. Callers should skip the CIS webhook when true,
+   * same "don't re-notify" principle as the RM-summary-email dedupe. */
+  reused?: boolean;
 }
 
 export interface BusinessLoanDetailsInput {
@@ -280,7 +285,7 @@ class RealBusinessLoanService implements BusinessLoanService {
     });
     if (!lead.builderLeadId) throw new Error('create_anacity_lead returned no lead id');
     const seedKey = input.mobile || input.personalPan;
-    return { leadId: lead.builderLeadId, rm: lead.rm ?? pickRm(seedKey) };
+    return { leadId: lead.builderLeadId, rm: lead.rm ?? pickRm(seedKey), reused: lead.reused };
   }
 
   async fetchGstFromPan(leadId: string, pan: string, token?: string): Promise<PanToGstResult | null> {

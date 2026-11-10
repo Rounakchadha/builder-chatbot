@@ -13,6 +13,7 @@ import { validateChoice } from '../lib/validateChoice';
 import { maskMobile, maskPan } from '../lib/crypto';
 import { leadCreatedMessage, pickRm } from './rm';
 import { ensureLeadOnce, type LeadSyncResult } from '../services/lead.service';
+import { sendLeadCreatedWebhook } from '../services/webhook.service';
 
 /**
  * Loan Against Securities (shares / mutual funds) — branches off homeLoan.ts's 'product' step,
@@ -180,6 +181,25 @@ export const loanAgainstSharesSteps: StepDefinition[] = [
         remoteCustomerId: ctx.answers.remoteCustomerId as number | undefined,
         token: ctx.answers.finfinityAccessToken as string | undefined,
       });
+      // lasLoanAmount is already collected by this point (asked earlier in this flow, before lead
+      // creation) — fire CIS's webhook here, with the full picture, rather than at lead-creation
+      // time generically (2026-11-06: fire once all the relevant info for this product is in hand).
+      if (lasLeadResult.builderLeadId && !lasLeadResult.reused) {
+        void sendLeadCreatedWebhook({
+          leadId: lasLeadResult.builderLeadId,
+          name: ctx.answers.name as string | undefined,
+          mobile: ctx.answers.mobile as string | undefined,
+          email: ctx.answers.email as string | undefined,
+          pan: ctx.answers.pan as string | undefined,
+          product: 'Loan Against Securities',
+          loanType: ctx.answers.lasType as string,
+          segment: ctx.answers.segment as string | undefined,
+          pincode: ctx.answers.pincode as string | undefined,
+          city: ctx.answers.pincodeArea as string | undefined,
+          loanAmount: Number(ctx.answers.lasLoanAmount) || undefined,
+          monthlyIncome: 0, // LAS collects neither income nor profit — 0, per instruction (2026-11-06)
+        });
+      }
       return { lasLeadResult };
     },
   },
@@ -194,12 +214,13 @@ export const loanAgainstSharesSteps: StepDefinition[] = [
       return leadCreatedMessage(payload.leadId, payload.rm);
     },
     input: () => ({ type: 'none' }),
-    onAnswer: (_parsed, ctx): { resultPayload: EligibilityResultPayload } => {
+    onAnswer: (_parsed, ctx): { resultPayload: EligibilityResultPayload; applicationSubmitted?: boolean } => {
       const lead = ctx.answers.lasLeadResult as LeadSyncResult;
       const seedKey = (ctx.answers.mobile as string) || ctx.conversationId;
       // No eligibility/offers at all for this product (direct instruction) — just a lead. Falls
       // back to the placeholder RM only when running on the mock lead service (no real API
       // configured) — the real service always returns one (see PRODUCT_CODE's 'LAS' entry).
+      const leadCreated = lead.status === 'synced';
       const resultPayload: EligibilityResultPayload = {
         eligible: true,
         name: ctx.answers.name as string | undefined,
@@ -209,9 +230,11 @@ export const loanAgainstSharesSteps: StepDefinition[] = [
         creditScore: ctx.answers.creditScore as number | undefined,
         rm: lead.rm ?? pickRm(seedKey),
         leadId: lead.builderLeadId ?? undefined,
-        leadCreated: lead.status === 'synced',
+        leadCreated,
       };
-      return { resultPayload };
+      // No explicit "submit" button for this product either (lead capture only) — a real lead
+      // means the application already went in, same reasoning as Business Loan's blResult.
+      return { resultPayload, applicationSubmitted: leadCreated || undefined };
     },
   },
 ];

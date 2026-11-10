@@ -1,4 +1,5 @@
 import { env } from '../config/env';
+import { isSandboxPan } from '../config/sandbox';
 import { hashCode } from '../flow-engine/eligibility';
 import { maskPan } from '../lib/crypto';
 import { logger } from '../lib/logger';
@@ -96,4 +97,12 @@ class RealPanService implements PanService {
 }
 
 // See FINFINITY_PAN_MOCK_OVERRIDE's comment in config/env.ts — temporary, test-only.
-export const panService: PanService = env.FINFINITY_API_BASE_URL && !env.FINFINITY_PAN_MOCK_OVERRIDE ? new RealPanService() : new MockPanService();
+const configuredPanService: PanService = env.FINFINITY_API_BASE_URL && !env.FINFINITY_PAN_MOCK_OVERRIDE ? new RealPanService() : new MockPanService();
+const sandboxPanService: PanService = new MockPanService();
+
+// SANDBOX_TEST_PAN (see config/sandbox.ts) always gets the mock identity, even when
+// configuredPanService above is the real one — this is what lets a Google reviewer's test PAN work
+// in production without a real getpandetail lookup.
+export const panService: PanService = {
+  lookup: (pan, token) => (isSandboxPan(pan) ? sandboxPanService.lookup(pan, token) : configuredPanService.lookup(pan, token)),
+};

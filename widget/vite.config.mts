@@ -18,10 +18,10 @@ export default defineConfig({
     },
     cssCodeSplit: false,
     outDir: 'dist',
-    // widget.js ships as a single embeddable <script> tag — lender logo PNGs (tens of KB each)
-    // must be inlined as data URIs rather than emitted as separate files Vite's 4KB default would
-    // otherwise produce, which the embed model has no way to deploy alongside the script.
-    assetsInlineLimit: 300_000,
+    // Lender logos are no longer imported into the source at all (security-review finding,
+    // 2026-11-02: base64-inlining ~600KB of logos into this single script made the bundle 6.9MB) —
+    // they're plain static files served from the API server and referenced by absolute url instead
+    // (see resultCard.ts's logoHtml), so there's nothing left for Vite's asset pipeline to inline.
   },
   server: {
     port: 5173,

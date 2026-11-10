@@ -1,6 +1,7 @@
 import { Agent } from 'undici';
 import { logger } from '../lib/logger';
 import { env } from '../config/env';
+import { reportFinfinityApiFailure } from './alerting.service';
 
 // Node's global fetch pools/reuses keep-alive TCP connections by default. Over a long-running
 // server process, a pooled connection to Finfinity's backend can go stale (silently dropped by
@@ -36,6 +37,12 @@ export interface FinfinityEnvelope<T> {
 }
 
 export class FinfinityApiError extends Error {
+  /** Set by throwTracked() below, after checking with alerting.service.ts whether this exact
+   * endpoint+code combo is failing repeatedly right now — see that file's own doc comment. Mutable
+   * (not constructor-set) so every existing call site that builds a FinfinityApiError directly
+   * doesn't need touching; only the one place that actually throws it (requestOnce) sets this. */
+  public isSystemic = false;
+
   constructor(
     message: string,
     public readonly code: string,
@@ -44,6 +51,16 @@ export class FinfinityApiError extends Error {
     super(message);
     this.name = 'FinfinityApiError';
   }
+}
+
+/** Every throw site in requestOnce goes through here instead of `throw new FinfinityApiError(...)`
+ * directly — so every real Finfinity API failure, of any kind, gets tracked for the "is this a
+ * repeating, systemic issue" check, with no risk of a future new failure path forgetting to call it. */
+async function throwTracked(path: string, message: string, code: string, detail: unknown): Promise<never> {
+  const err = new FinfinityApiError(message, code, detail);
+  const { isSystemic } = await reportFinfinityApiFailure(path, code, message);
+  err.isSystemic = isSystemic;
+  throw err;
 }
 
 // Confirmed live against UAT: validateotpv2 returns error_code "CUST_NOT_EXIST" on its SUCCESS
@@ -113,7 +130,7 @@ async function requestOnce<T>(method: 'GET' | 'POST', path: string, body: unknow
   } catch (err) {
     const timedOut = err instanceof Error && err.name === 'TimeoutError';
     logger.error({ event: 'finfinity_api_network_error', path, attempt, timedOut, durationMs: Date.now() - startedAt }, 'Finfinity API request failed before a response came back');
-    throw new FinfinityApiError(timedOut ? 'Finfinity API timed out' : 'Could not reach Finfinity API', timedOut ? 'TIMEOUT' : 'NETWORK_ERROR', err);
+    return throwTracked(path, timedOut ? 'Finfinity API timed out' : 'Could not reach Finfinity API', timedOut ? 'TIMEOUT' : 'NETWORK_ERROR', err);
   }
 
   let envelope: FinfinityEnvelope<T>;
@@ -121,7 +138,7 @@ async function requestOnce<T>(method: 'GET' | 'POST', path: string, body: unknow
     envelope = (await res.json()) as FinfinityEnvelope<T>;
   } catch (err) {
     logger.error({ event: 'finfinity_api_bad_response', path, attempt, httpStatus: res.status, durationMs: Date.now() - startedAt }, 'Finfinity API returned a non-JSON response');
-    throw new FinfinityApiError(`Finfinity API returned a non-JSON response (HTTP ${res.status})`, 'BAD_RESPONSE', err);
+    return throwTracked(path, `Finfinity API returned a non-JSON response (HTTP ${res.status})`, 'BAD_RESPONSE', err);
   }
 
   // Confirmed live: a rejected/missing bearer token doesn't come back as the usual envelope at
@@ -139,12 +156,12 @@ async function requestOnce<T>(method: 'GET' | 'POST', path: string, body: unknow
     // the truth instead of a blank "something went wrong."
     const message = res.status === 401 ? 'Your session needs to be refreshed — please restart your application.' : detail || envelope.error_msg || `Finfinity API error (HTTP ${res.status})`;
     logger.warn({ event: 'finfinity_api_http_error', path, attempt, httpStatus: res.status, detail, durationMs: Date.now() - startedAt }, 'Finfinity API returned a non-2xx status');
-    throw new FinfinityApiError(message, envelope.error_code || `HTTP_${res.status}`, redactDetail(envelope.error_dtl));
+    return throwTracked(path, message, envelope.error_code || `HTTP_${res.status}`, redactDetail(envelope.error_dtl));
   }
 
   if (envelope.error_code && !SUCCESS_FLAVORED_ERROR_CODES.has(envelope.error_code)) {
     logger.warn({ event: 'finfinity_api_error', path, attempt, code: envelope.error_code, msg: envelope.error_msg, durationMs: Date.now() - startedAt }, 'Finfinity API returned an error envelope');
-    throw new FinfinityApiError(envelope.error_msg || 'Finfinity API error', envelope.error_code, redactDetail(envelope.error_dtl));
+    return throwTracked(path, envelope.error_msg || 'Finfinity API error', envelope.error_code, redactDetail(envelope.error_dtl));
   }
 
   logger.info({ event: 'finfinity_api_success', path, attempt, durationMs: Date.now() - startedAt }, 'Finfinity API call succeeded');

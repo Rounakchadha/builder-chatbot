@@ -1,4 +1,5 @@
 import { env } from '../config/env';
+import { isSandboxMobile } from '../config/sandbox';
 import { hashOtp, hmacLookup, maskMobile } from '../lib/crypto';
 import { logger } from '../lib/logger';
 import { redis } from '../lib/redis';
@@ -189,4 +190,29 @@ class RealSmsService implements SmsService {
   }
 }
 
-export const smsService: SmsService = env.FINFINITY_API_BASE_URL ? new RealSmsService() : new MockSmsService();
+const configuredSmsService: SmsService = env.FINFINITY_API_BASE_URL ? new RealSmsService() : new MockSmsService();
+const sandboxSmsService = new MockSmsService();
+
+function sandboxOtpFlagKey(conversationId: string) {
+  return `otp:sandbox:${conversationId}`;
+}
+
+// SANDBOX_TEST_MOBILE (see config/sandbox.ts) always gets the mock OTP flow — no real SMS sent, and
+// the fixed "000000" code (see MockSmsService.sendOtp above) works every time, so a Google reviewer
+// has a reusable credential instead of needing a real phone. verifyOtp doesn't receive the mobile
+// number (see RealSmsService.verifyOtp's own comment on why), so the decision made in sendOtp is
+// stashed in Redis under the same conversationId and read back here.
+export const smsService: SmsService = {
+  async sendOtp(conversationId, mobile) {
+    if (isSandboxMobile(mobile)) {
+      await redis.set(sandboxOtpFlagKey(conversationId), '1', 'EX', OTP_TTL_SECONDS);
+      return sandboxSmsService.sendOtp(conversationId, mobile);
+    }
+    await redis.del(sandboxOtpFlagKey(conversationId));
+    return configuredSmsService.sendOtp(conversationId, mobile);
+  },
+  async verifyOtp(conversationId, code) {
+    const isSandbox = await redis.get(sandboxOtpFlagKey(conversationId));
+    return isSandbox ? sandboxSmsService.verifyOtp(conversationId, code) : configuredSmsService.verifyOtp(conversationId, code);
+  },
+};

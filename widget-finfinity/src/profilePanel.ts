@@ -1,6 +1,18 @@
 import { describeApiError, type ChatApi } from './api';
 import { ICON } from './icons';
 
+// Field labels/values here are customer-typed (email, GST number, business address, etc.) and get
+// dropped straight into innerHTML below — escape them first or a value like `<img onerror=...>`
+// runs as real HTML in the page (security-review finding, 2026-11-02).
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 /**
  * The live "your details" sidebar — mirrors whatever the bot has captured so far and lets the
  * customer correct it directly (click the pencil, type, save) instead of having to say it in
@@ -33,10 +45,10 @@ export class ProfilePanel {
       const row = document.createElement('div');
       row.className = 'lc-sidebar-field';
       row.innerHTML = `
-        <div class="lc-sidebar-label">${f.label}</div>
+        <div class="lc-sidebar-label">${escapeHtml(f.label)}</div>
         <div class="lc-sidebar-value-row">
-          <span class="lc-sidebar-value">${f.value}</span>
-          ${f.editable ? `<button class="lc-sidebar-edit" aria-label="Edit ${f.label}" type="button">${ICON.edit}</button>` : ''}
+          <span class="lc-sidebar-value">${escapeHtml(f.value)}</span>
+          ${f.editable ? `<button class="lc-sidebar-edit" aria-label="Edit ${escapeHtml(f.label)}" type="button">${ICON.edit}</button>` : ''}
         </div>
       `;
       if (f.editable) {
@@ -50,7 +62,7 @@ export class ProfilePanel {
     const valueRow = row.querySelector<HTMLElement>('.lc-sidebar-value-row')!;
     const rawValue = field.value.replace(/[₹,]/g, '').replace(/\/mo$/, '');
     valueRow.innerHTML = `
-      <input class="lc-sidebar-input" value="${rawValue}" />
+      <input class="lc-sidebar-input" value="${escapeHtml(rawValue)}" />
       <button class="lc-sidebar-save" aria-label="Save" type="button">${ICON.check}</button>
     `;
     const input = valueRow.querySelector<HTMLInputElement>('input')!;
@@ -58,6 +70,13 @@ export class ProfilePanel {
     input.select();
 
     const save = async () => {
+      // Bug fixed 2026-11-02: saving with no actual change (e.g. opening Edit, then just tapping
+      // the checkmark without typing anything) used to still call the server and post a "Got it —
+      // X updated to Y" chat bubble even though Y was already Y — confusing since nothing changed.
+      if (input.value.trim() === rawValue.trim()) {
+        await this.refresh();
+        return;
+      }
       const token = this.getSessionToken();
       if (!token) return;
       const saveBtn = valueRow.querySelector<HTMLButtonElement>('.lc-sidebar-save')!;

@@ -5,6 +5,7 @@ import { validateChoice } from '../lib/validateChoice';
 import { maskMobile, maskPan } from '../lib/crypto';
 import { mockOffersForAmount } from './mockOffers';
 import { ensureLeadOnce, type LeadSyncResult } from '../services/lead.service';
+import { sendLeadCreatedWebhook } from '../services/webhook.service';
 
 /** A recap of everything collected, shown once right before the final result (lead id + RM) —
  * same spirit as homeLoan.ts's buildProfileSummary. */
@@ -104,6 +105,27 @@ export const goldLoanSteps: StepDefinition[] = [
       // amount field (the real LTV cap below already bounds what's actually offered either way).
       if (v > 5_00_00_000) return { ok: false, error: "That doesn't look right — enter the loan amount you need (up to ₹5 crore)." };
       return { ok: true, parsed: v };
+    },
+    // Fires CIS's webhook here, not at glCreateLead above — the lead there is created the moment
+    // the customer picks Gold Loan, before this amount is known (2026-11-06: fire once all the
+    // relevant info for this product is in hand).
+    onAnswer: (parsed, ctx) => {
+      const glLeadResult = ctx.answers.glLeadResult as LeadSyncResult | undefined;
+      if (!glLeadResult?.builderLeadId || glLeadResult.reused) return;
+      void sendLeadCreatedWebhook({
+        leadId: glLeadResult.builderLeadId,
+        name: ctx.answers.name as string | undefined,
+        mobile: ctx.answers.mobile as string | undefined,
+        email: ctx.answers.email as string | undefined,
+        pan: ctx.answers.pan as string | undefined,
+        product: 'Gold Loan',
+        loanType: 'Gold Loan',
+        segment: ctx.answers.segment as string | undefined,
+        pincode: ctx.answers.pincode as string | undefined,
+        city: ctx.answers.pincodeArea as string | undefined,
+        loanAmount: Number(parsed) || undefined,
+        monthlyIncome: 0, // Gold Loan collects neither income nor profit — 0, per instruction (2026-11-06)
+      });
     },
   },
   {

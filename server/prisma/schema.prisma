@@ -135,6 +135,20 @@ model Lead {
   // hasRmSummaryEmailAlreadySent/markRmSummaryEmailSent in lead.service.ts), not just this one.
   rmEmailSent Boolean @default(false)
 
+  // Added 2026-11-10 (bug fix): syncing financials (updateLead/updateCustomer) onto a REUSED lead
+  // was skipped entirely (see ensureLead's own comment in flows/homeLoan.ts) to stop the
+  // RM-notification spam above — but that also meant a returning customer's CURRENT income/EMI
+  // never reached Finfinity at all, so getcustomeroffers kept answering with whatever was on file
+  // from the very first time this lead was created, no matter how many times they'd since updated
+  // it. Confirmed live (2026-11-10): a customer who'd edited income down to ₹30,000 still got
+  // eligibility computed against the original ₹4,00,000. Fix: only skip the sync when nothing in
+  // this snapshot has actually changed since the last successful sync — a genuine change still
+  // syncs (and still notifies the RM, correctly, since something real actually changed), only a
+  // byte-for-byte-identical revisit (e.g. five "Start over" clicks in a row, which is what the
+  // original 2026-10-31 bug report actually was) skips it. JSON of every field pushed by
+  // syncLeadFinancials (see that function), null until the first successful sync.
+  lastSyncedFinancialsJson String?
+
   // Security-review finding, 2026-10-23: listApplications (routes/chat.ts) and ensureLead's own
   // P2002-recovery lookup both query by builderLeadId-adjacent patterns and by this id directly in
   // status lookups — no index meant a full table scan as Lead rows grow.

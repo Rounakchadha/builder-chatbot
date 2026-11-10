@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { ChatMessageRequest, CHECK_ELIGIBILITY, CHECK_EXISTING_APPLICATION, type ChatTurnResponse, type EligibilityResultPayload } from '@builder-chatbot/shared';
+import { ChatMessageRequest, CHECK_ELIGIBILITY, CHECK_EXISTING_APPLICATION, LOAN_TYPES, type ChatTurnResponse, type EligibilityResultPayload } from '@builder-chatbot/shared';
 import { applicablePath, getStep, nextStepId, renderStep } from '../flow-engine/engine';
 import type { StepContext } from '../flow-engine/types';
 import { mainFlow } from '../flows';
@@ -11,12 +11,15 @@ import { EDITABLE_FIELDS, isEditableField, isFieldEditableNow, PROFILE_FIELDS } 
 import { createSession, loadSession, persistAnswer, advanceCurrentStep, saveSession, logMessage, type SessionState } from '../services/session.service';
 import { smsService } from '../services/sms.service';
 import { FinfinityApiError } from '../services/finfinityClient';
-import { goldLeadService } from '../services/goldLoan.service';
+import { goldLeadService, sandboxGoldLeadService } from '../services/goldLoan.service';
+import { isSandboxPan, isSandboxMobile } from '../config/sandbox';
 import { leadService, ensureLeadOnce, hasRmSummaryEmailAlreadySent, markRmSummaryEmailSent } from '../services/lead.service';
+import { sendLeadCreatedWebhook } from '../services/webhook.service';
 import { personalLoanFinancerService, type PlFinancerLenderEntry } from '../services/personalLoanFinancer.service';
 import { env } from '../config/env';
 import { emailService } from '../services/email.service';
 import { recallIdentity } from '../services/identity.service';
+import { verifyLaunchToken } from '../services/launchToken.service';
 import { searchEmployers } from '../services/employer.service';
 import { hmacLookup, maskMobile, maskPan } from '../lib/crypto';
 import { logger } from '../lib/logger';
@@ -39,7 +42,7 @@ const RESTART_PATTERN = /^(start\s*over|restart(\s*(the\s*)?(chat|conversation|e
  * verified mobile+OTP within the last 10 minutes skip straight past both — see
  * identity.service.ts and the 'intent'/'mobile'/'triggerOtpDedupe'/'otpDedupe' step guards in
  * homeLoan.ts. An unrecognized/expired/missing token just falls back to a normal blank session. */
-async function beginNewSession(ip: string, userAgent: string | undefined, identityToken?: string): Promise<ChatTurnResponse> {
+async function beginNewSession(ip: string, userAgent: string | undefined, identityToken?: string, launchToken?: string): Promise<ChatTurnResponse> {
   const ctxAnswers: Record<string, unknown> = {};
   let mobileHash: string | undefined;
   let mobileMasked: string | undefined;
@@ -56,6 +59,36 @@ async function beginNewSession(ip: string, userAgent: string | undefined, identi
       });
       mobileHash = hmacLookup(identity.mobile);
       mobileMasked = maskMobile(identity.mobile);
+    }
+  }
+
+  // SDK launch token (see launchToken.service.ts) — a partner's own backend encrypts a customer's
+  // product/mobile/email with a shared secret and hands the result straight to the widget; no API
+  // call to us is involved in minting it at all. This is a SUGGESTION, not a verified identity: OTP
+  // still runs normally against whatever mobile number was prefilled (unlike identityToken above,
+  // which carries an already-verified Finfinity access token and so can skip OTP entirely).
+  // `verified` is deliberately NOT honored here yet — see launchToken.service.ts's doc comment.
+  // `name` (2026-11-03 instruction: "dont use it anywhere yet... dont show the name they give us
+  // also") — stored ONLY as prefilledName, never into answers.name, so nothing anywhere displays
+  // it or treats it as the customer's actual name yet. It's kept purely so homeLoan.ts's
+  // panNameMismatchChoice fuzzy-match feature has something to compare against the moment it's
+  // switched on (see HOME_LOAN_NAME_MISMATCH_CHECK_ENABLED) — until then this field is otherwise
+  // completely inert.
+  if (launchToken) {
+    const prefill = verifyLaunchToken(launchToken);
+    if (prefill) {
+      if (prefill.product) ctxAnswers.product = prefill.product;
+      // Checked against LOAN_TYPES here (not left to the loanType step's own validation) because
+      // that step is SKIPPED entirely once ctx.answers.loanType is already set — an invalid value
+      // would otherwise silently lock in a loan type that was never a real option, with no chance
+      // left to ask properly. An unmatched value here just means the question gets asked normally.
+      if (prefill.product && prefill.loanType && LOAN_TYPES[prefill.product]?.includes(prefill.loanType)) {
+        ctxAnswers.loanType = prefill.loanType;
+      }
+      if (prefill.mobile) ctxAnswers.mobile = prefill.mobile;
+      if (prefill.email) ctxAnswers.email = prefill.email;
+      if (prefill.name) ctxAnswers.prefilledName = prefill.name;
+      if (prefill.product || prefill.mobile || prefill.email) ctxAnswers.intent = CHECK_ELIGIBILITY;
     }
   }
 
@@ -88,7 +121,7 @@ async function beginNewSession(ip: string, userAgent: string | undefined, identi
       await saveSession(state);
     } catch (err) {
       logger.error({ err, stepId: firstId, conversationId: state.conversationId }, 'first-step onAnswer failed for a new/resumed session');
-      errorText = err instanceof UserFacingError ? err.message : EXTERNAL_SERVICE_ERROR_TEXT;
+      errorText = resolveErrorText(err);
     }
   }
 
@@ -127,6 +160,68 @@ async function runOnAnswer(stepId: string, parsed: unknown, ctx: StepContext): P
   }
 }
 
+/** Fires the RM summary email — exactly once per REAL customer+product, ever (see
+ * hasRmSummaryEmailAlreadySent's own doc comment in lead.service.ts for the cross-conversation
+ * dedupe this relies on). `rmSummaryEmailSent` additionally guards against sending again within
+ * this one conversation (widget polling, page refresh, etc.).
+ *
+ * Bug fixed 2026-11-10 (direct instruction): this used to fire the moment eligibility was FIRST
+ * shown, for every product — but Home Loan/LAP/Personal Loan all let the customer keep editing
+ * income/EMI/etc. from the profile panel right up until they actually pick an offer (see
+ * editableFields.ts's notSubmitted). The RM was being notified with whatever numbers happened to be
+ * on screen at that first moment, which could be stale by the time the customer actually committed
+ * to anything. Now called explicitly once applicationSubmitted is true — the select-offer handler
+ * for HL/LAP/PL, gold-submit for Gold Loan — the same moment editing actually locks. Business
+ * Loan/LAS set applicationSubmitted the instant their own result exists (no separate "pick an
+ * offer" step, nothing left to edit by then anyway), so calling this from their own result render
+ * is still correct and unchanged for them. */
+async function maybeSendRmSummaryEmail(
+  ctx: StepContext,
+  payload: { leadCreated?: boolean; rm?: { name: string; phone: string; email: string }; product?: string; loanType?: string; leadId?: string } | undefined,
+): Promise<void> {
+  if (!payload?.leadCreated || !payload.rm || ctx.answers.rmSummaryEmailSent) return;
+  const product = payload.product ?? (ctx.answers.product as string | undefined) ?? 'Unknown';
+  const alreadySentElsewhere = await hasRmSummaryEmailAlreadySent(ctx.answers.remoteCustomerId as number | undefined, product);
+  if (alreadySentElsewhere) {
+    ctx.answers.rmSummaryEmailSent = true;
+    await persistAnswer(ctx.conversationId, 'rmSummaryEmailSent', true);
+    return;
+  }
+  // Gold Loan/LAS send everything the customer answered; Business Loan sends everything except
+  // PAN and CIBIL score (2026-10-21 instruction) — every other product still only gets the
+  // generic rows above, unchanged.
+  const productDetails =
+    product === 'Gold Loan'
+      ? buildGoldLoanRmDetails(ctx)
+      : product === 'Loan Against Securities'
+        ? buildLasRmDetails(ctx)
+        : product === 'Business Loan'
+          ? buildBusinessLoanRmDetails(ctx)
+          : undefined;
+  // Security-review finding, 2026-10-23: the "sent" flag used to be set BEFORE this call, so a
+  // real SMTP failure (sendRmSummary logs and swallows its own error, see email.service.ts) was
+  // marked permanently "done" anyway — the RM silently never heard about the lead with nothing
+  // to retry it. Now only persisted once the send actually reports success.
+  const sent = await emailService.sendRmSummary({
+    // TEMPORARY (2026-10-21 instruction) — every send goes to RM_EMAIL_OVERRIDE_TO instead of
+    // the real/fallback RM's own email, for test visibility. RM name/phone shown in the email
+    // body are still the real assigned RM's — only the actual delivery address is overridden.
+    rm: env.RM_EMAIL_OVERRIDE_TO ? { ...payload.rm, email: env.RM_EMAIL_OVERRIDE_TO } : payload.rm,
+    customerName: ctx.answers.name as string | undefined,
+    mobile: ctx.answers.mobile as string | undefined,
+    customerEmail: ctx.answers.email as string | undefined,
+    product,
+    loanType: payload.loanType,
+    leadId: payload.leadId,
+    productDetails,
+  });
+  if (sent) {
+    ctx.answers.rmSummaryEmailSent = true;
+    await persistAnswer(ctx.conversationId, 'rmSummaryEmailSent', true);
+    await markRmSummaryEmailSent(ctx.conversationId);
+  }
+}
+
 /** renderStep + the one bit of extra state (the computed result payload) it doesn't know about — every
  * call site that might render the 'result' step goes through this so the payload is never forgotten. */
 async function render(stepId: string, sessionToken: string, ctx: StepContext, errorText?: string): Promise<ChatTurnResponse> {
@@ -151,56 +246,10 @@ async function render(stepId: string, sessionToken: string, ctx: StepContext, er
     // collect one too before a lead/RM follow-up is even possible.
     response.panOfferNeedsMobile = !ctx.answers.mobile;
 
-    // RM summary email — fired exactly once per REAL customer+product, the first time a lead (real
-    // or dummy) actually exists, regardless of product. `rmSummaryEmailSent` guards against sending
-    // again on every re-render of the same result step WITHIN this conversation (widget polling,
-    // page refresh, etc.), but that alone wasn't enough: a brand-new conversation for a RETURNING
-    // customer starts with that flag unset too, so even after the lead-reuse fix stopped creating
-    // duplicate real leads, every "Start over" still fired a fresh email (confirmed live, 2026-10-31
-    // — same builderLeadId correctly reused 5 times, yet the email still went out each time).
-    // hasRmSummaryEmailAlreadySent checks across EVERY conversation sharing this remoteCustomerId+
-    // product, not just this one — see its own doc comment in lead.service.ts.
-    if (payload?.leadCreated && payload.rm && !ctx.answers.rmSummaryEmailSent) {
-      const product = payload.product ?? (ctx.answers.product as string | undefined) ?? 'Unknown';
-      const alreadySentElsewhere = await hasRmSummaryEmailAlreadySent(ctx.answers.remoteCustomerId as number | undefined, product);
-      if (alreadySentElsewhere) {
-        ctx.answers.rmSummaryEmailSent = true;
-        await persistAnswer(ctx.conversationId, 'rmSummaryEmailSent', true);
-      } else {
-        // Gold Loan/LAS send everything the customer answered; Business Loan sends everything except
-        // PAN and CIBIL score (2026-10-21 instruction) — every other product still only gets the
-        // generic rows above, unchanged.
-        const productDetails =
-          product === 'Gold Loan'
-            ? buildGoldLoanRmDetails(ctx)
-            : product === 'Loan Against Securities'
-              ? buildLasRmDetails(ctx)
-              : product === 'Business Loan'
-                ? buildBusinessLoanRmDetails(ctx)
-                : undefined;
-        // Security-review finding, 2026-10-23: the "sent" flag used to be set BEFORE this call, so a
-        // real SMTP failure (sendRmSummary logs and swallows its own error, see email.service.ts) was
-        // marked permanently "done" anyway — the RM silently never heard about the lead with nothing
-        // to retry it. Now only persisted once the send actually reports success.
-        const sent = await emailService.sendRmSummary({
-          // TEMPORARY (2026-10-21 instruction) — every send goes to RM_EMAIL_OVERRIDE_TO instead of
-          // the real/fallback RM's own email, for test visibility. RM name/phone shown in the email
-          // body are still the real assigned RM's — only the actual delivery address is overridden.
-          rm: env.RM_EMAIL_OVERRIDE_TO ? { ...payload.rm, email: env.RM_EMAIL_OVERRIDE_TO } : payload.rm,
-          customerName: ctx.answers.name as string | undefined,
-          mobile: ctx.answers.mobile as string | undefined,
-          customerEmail: ctx.answers.email as string | undefined,
-          product,
-          loanType: payload.loanType,
-          leadId: payload.leadId,
-          productDetails,
-        });
-        if (sent) {
-          ctx.answers.rmSummaryEmailSent = true;
-          await persistAnswer(ctx.conversationId, 'rmSummaryEmailSent', true);
-          await markRmSummaryEmailSent(ctx.conversationId);
-        }
-      }
+    // Business Loan/LAS only — see maybeSendRmSummaryEmail's own doc comment for why HL/LAP/PL/
+    // Gold Loan call it explicitly from select-offer/gold-submit instead of from here.
+    if (ctx.answers.applicationSubmitted === true) {
+      await maybeSendRmSummaryEmail(ctx, payload);
     }
   }
   if (isResultType && ctx.answers.intent === CHECK_EXISTING_APPLICATION) {
@@ -219,6 +268,24 @@ const OTP_STEP_IDS = ['otpDedupe', 'otpBureauFound', 'otpBureauNotFound', 'otpPa
  * a generic, friendly message rather than the underlying error (which may name an internal
  * service/endpoint), and logged with enough detail on the server side to actually debug it. */
 const EXTERNAL_SERVICE_ERROR_TEXT = "We're having trouble reaching one of our services right now. Please try again in a moment.";
+
+// Bug fixed 2026-11-06: a real customer hit a repeating getpandetail 402 and kept retrying for over
+// an hour, because EXTERNAL_SERVICE_ERROR_TEXT above actively tells people to "try again in a
+// moment" even when the underlying issue is NOT a momentary blip — see alerting.service.ts, which is
+// what actually knows the difference (the same endpoint+code failing many times in a short window).
+const SYSTEMIC_SERVICE_ERROR_TEXT =
+  "We're having a wider issue with one of our partner services right now, and our team has already been notified. Trying again immediately probably won't help — please check back in a little while.";
+
+/** Picks the right customer-facing text for a thrown error — a UserFacingError's own message as-is,
+ * the "known, ongoing issue" text when alerting.service.ts has flagged this exact failure as
+ * systemic (see FinfinityApiError.isSystemic), or the generic fallback otherwise. Centralized so the
+ * three call sites below can't drift out of sync with each other on this logic. */
+function resolveErrorText(err: unknown, knownSafeMessages: string[] = []): string {
+  if (err instanceof UserFacingError) return err.message;
+  if (err instanceof Error && knownSafeMessages.includes(err.message)) return err.message;
+  if (err instanceof FinfinityApiError && err.isSystemic) return SYSTEMIC_SERVICE_ERROR_TEXT;
+  return EXTERNAL_SERVICE_ERROR_TEXT;
+}
 
 /** Advances currentStepId forward one step, executing the new step's onAnswer immediately (see architecture notes). */
 async function advanceAndRender(state: SessionState, fromStepId: string, ctx: StepContext): Promise<ChatTurnResponse> {
@@ -240,7 +307,7 @@ async function advanceAndRender(state: SessionState, fromStepId: string, ctx: St
       // before any of that below), so it's safe to just re-render the step the customer was
       // already sitting on, with a friendly error — same as an interactive step's onAnswer failing.
       logger.error({ err, stepId: nextId, conversationId: ctx.conversationId }, 'auto-step onAnswer failed');
-      const errorText = err instanceof UserFacingError ? err.message : EXTERNAL_SERVICE_ERROR_TEXT;
+      const errorText = resolveErrorText(err);
       const response = await render(fromStepId, state.sessionToken, ctx, errorText);
       if (err instanceof UserFacingError && err.action) response.errorAction = err.action;
       return response;
@@ -277,6 +344,11 @@ interface EditOutcome {
  * would have to pass), then re-runs eligibility math if a result already exists. */
 async function applyFieldEdit(state: SessionState, ctx: StepContext, field: string, rawValue: string): Promise<EditOutcome> {
   if (!isEditableField(field)) return { ok: false, error: 'That detail can\'t be edited directly — start a new check if it needs to change.' };
+  // Locked the moment a real application has gone in (see editableFields.ts's notSubmitted) —
+  // checked before the found/not-found reason below so the customer gets the right explanation.
+  if (ctx.answers.applicationSubmitted === true) {
+    return { ok: false, error: "This application has already been submitted and can't be edited anymore — start a new eligibility check if anything needs to change." };
+  }
   // An existing (dedupe-found) customer's segment/pincode/email came from Finfinity's own
   // verified records — only income/emi (always self-declared either way) stay editable for them.
   if (!isFieldEditableNow(ctx, field)) {
@@ -341,7 +413,7 @@ export async function chatRoutes(app: FastifyInstance) {
 
     // --- Brand new session ---
     if (!body.sessionToken) {
-      return reply.send(await beginNewSession(ip, userAgent, body.identityToken));
+      return reply.send(await beginNewSession(ip, userAgent, body.identityToken, body.launchToken));
     }
 
     const state = await loadSession(body.sessionToken);
@@ -364,7 +436,7 @@ export async function chatRoutes(app: FastifyInstance) {
     // screen wants a fresh conversation, not to have that phrase validated as an actual answer to
     // the current step (which would usually just show a validation error and confuse them).
     if (typeof body.value === 'string' && RESTART_PATTERN.test(body.value.trim())) {
-      return reply.send(await beginNewSession(ip, userAgent, body.identityToken));
+      return reply.send(await beginNewSession(ip, userAgent, body.identityToken, body.launchToken));
     }
 
     const inputSpec = currentStep.input(ctx);
@@ -403,8 +475,8 @@ export async function chatRoutes(app: FastifyInstance) {
       // plain Errors written to be shown as-is) — but a future step wired to a real external call
       // must not leak that call's raw error text, so the same allow-list applies here too.
       const knownSafeMessages = ['Incorrect OTP. Please try again.', 'Too many incorrect attempts. Please request a new OTP.'];
-      const message = err instanceof UserFacingError || (err instanceof Error && knownSafeMessages.includes(err.message)) ? (err as Error).message : EXTERNAL_SERVICE_ERROR_TEXT;
-      if (message === EXTERNAL_SERVICE_ERROR_TEXT) logger.error({ err, stepId: state.currentStepId, conversationId: ctx.conversationId }, 'interactive-step onAnswer failed');
+      const message = resolveErrorText(err, knownSafeMessages);
+      if (message === EXTERNAL_SERVICE_ERROR_TEXT || message === SYSTEMIC_SERVICE_ERROR_TEXT) logger.error({ err, stepId: state.currentStepId, conversationId: ctx.conversationId }, 'interactive-step onAnswer failed');
       const response = await render(state.currentStepId, state.sessionToken, ctx, message);
       return reply.send(response);
     }
@@ -489,17 +561,37 @@ export async function chatRoutes(app: FastifyInstance) {
     // The real lead (and real RM) were already created the moment this branch was entered
     // (glCreateLead, see flows/goldLoan.ts) — this endpoint only attaches Muthoot and submits,
     // the two calls that actually consume Finfinity's "one Muthoot lead per customer" slot. The RM
-    // summary email already fired back when glResult first rendered (same generic path every other
-    // product uses, right above in this file) — nothing to send again here.
+    // summary email fires below, once the submission actually succeeds — not at glResult's first
+    // render — see maybeSendRmSummaryEmail's own doc comment for why.
     if (!resultPayload.leadId || !resultPayload.rm) {
       return reply.code(409).send({ ok: false, error: 'no_lead_for_gold_submit' });
     }
 
-    const result = await goldLeadService.submitApplication({
+    // SANDBOX_TEST_PAN/SANDBOX_TEST_MOBILE (config/sandbox.ts): never reaches the real Muthoot
+    // submission, even in production — see sandboxGoldLeadService's own comment.
+    const isSandboxCustomer = isSandboxPan(state.answers.pan as string | undefined) || isSandboxMobile(state.answers.mobile as string | undefined);
+    const result = await (isSandboxCustomer ? sandboxGoldLeadService : goldLeadService).submitApplication({
       leadId: resultPayload.leadId,
       rm: resultPayload.rm,
       token: state.answers.finfinityAccessToken as string | undefined,
     });
+
+    // A real submission (or a confirmed prior one — alreadyExists) locks the profile panel's edit
+    // pencils (see editableFields.ts's notSubmitted). A transient failure leaves editing open so
+    // the customer can still retry with corrected details.
+    if (result.ok || result.alreadyExists) {
+      const ctx = toCtx(state, req.ip, req.headers['user-agent']);
+      ctx.answers.applicationSubmitted = true;
+      await persistAnswer(ctx.conversationId, 'applicationSubmitted', true);
+      // Bug fixed 2026-11-02: persistAnswer only writes Postgres — loadSession's fast path reads
+      // the Redis-cached session blob first (see session.service.ts), which this never refreshed.
+      // The very next request within the cache's TTL (e.g. a profile-panel refresh) saw the stale
+      // cached copy with no applicationSubmitted at all, so the edit lock silently never took
+      // effect until the cache happened to expire. saveSession writes the updated answers back to
+      // Redis immediately, same as the normal step-answer flow already does elsewhere in this file.
+      await saveSession(state);
+      await maybeSendRmSummaryEmail(ctx, { leadCreated: true, rm: resultPayload.rm, product: 'Gold Loan', loanType: 'Gold Loan', leadId: resultPayload.leadId });
+    }
 
     return reply.send(result);
   });
@@ -551,6 +643,25 @@ export async function chatRoutes(app: FastifyInstance) {
       if (!lead.builderLeadId) return reply.code(502).send({ ok: false, error: 'lead_creation_failed' });
       leadId = lead.builderLeadId;
       rm = lead.rm;
+      // This is the fallback "no lead yet by the time an offer was picked" path — by now the
+      // customer's already seen eligibility, so loan amount/income are already collected. Fire CIS's
+      // webhook here with the full picture (2026-11-06), same as every other product's own moment.
+      if (!lead.reused) {
+        void sendLeadCreatedWebhook({
+          leadId: lead.builderLeadId,
+          name: ctx.answers.name as string | undefined,
+          mobile: ctx.answers.mobile as string | undefined,
+          email: ctx.answers.email as string | undefined,
+          pan: ctx.answers.pan as string | undefined,
+          product: payload.product,
+          loanType: payload.loanType,
+          segment: ctx.answers.segment as string | undefined,
+          pincode: ctx.answers.pincode as string | undefined,
+          city: ctx.answers.pincodeArea as string | undefined,
+          loanAmount: Number(ctx.answers.plLoanAmount) || undefined,
+          monthlyIncome: Number(ctx.answers.plIncome ?? ctx.answers.income) || undefined,
+        });
+      }
       payload.leadId = leadId;
       payload.leadCreated = true;
       if (rm) payload.rm = rm;
@@ -577,6 +688,35 @@ export async function chatRoutes(app: FastifyInstance) {
     }
 
     await leadService.setOfferTenure(leadId, offer.tenureYears * 12, token);
+
+    // The explicit "apply with this lender" action — the real submission for Home Loan/LAP/
+    // Personal Loan (see editableFields.ts's notSubmitted). Locks the profile panel's edit pencils
+    // from here on; only a brand-new conversation (started via "start over") brings them back.
+    ctx.answers.applicationSubmitted = true;
+    await persistAnswer(ctx.conversationId, 'applicationSubmitted', true);
+
+    // Bug fixed 2026-11-02 ("selected offer vanishes on reload"): which lender was picked used to
+    // live only in the browser's DOM (resultCard.ts's thank-you swap) — a fresh page load re-fetched
+    // the same resultPayload, which still had the full offers list and no memory of the pick, so the
+    // widget asked the customer to select an offer all over again. Persisting it onto the payload
+    // itself lets renderResultCard jump straight to the thank-you state on any later render.
+    payload.selectedLenderName = body.lenderName;
+    ctx.answers.resultPayload = payload;
+    await persistAnswer(ctx.conversationId, 'resultPayload', payload);
+
+    // See maybeSendRmSummaryEmail's own doc comment — this, not the first eligibility render, is
+    // the actual "customer committed, numbers are now final" moment for HL/LAP/PL.
+    await maybeSendRmSummaryEmail(ctx, payload);
+
+    // Bug fixed 2026-11-02: persistAnswer only writes Postgres — loadSession's fast path reads the
+    // Redis-cached session blob first (see session.service.ts), which this never refreshed. The
+    // very next request within the cache's TTL (a profile-panel refresh, or a reload before the
+    // cache happened to expire) saw the stale cached copy — no applicationSubmitted, no
+    // selectedLenderName — so the edit lock silently never took effect and the offer looked
+    // unselected again. saveSession writes the updated answers back to Redis immediately, same as
+    // the normal step-answer flow already does elsewhere in this file.
+    await saveSession(state);
+
     return reply.send({ ok: true, leadId, rm });
   });
 

@@ -29,13 +29,17 @@ export interface LeadSyncResult {
    * undefined so the flow's placeholder RM (see flows/rm.ts's pickRm) still applies there. */
   rm?: { name: string; phone: string; email: string };
   /** True when this call found and reused an existing lead instead of creating a new one — see
-   * ensureLeadOnce. Callers should skip any "push the full profile onto this lead" follow-up sync
-   * (updatelead/updatecustomer) when true: those calls appear to trigger Finfinity's own lead
-   * notification EVERY time they run, not just on creation — confirmed 2026-10-31 by 5 "Start over"
-   * conversations for the same returning customer correctly reusing the same real builderLeadId
-   * (lead creation itself was NOT duplicated), yet the email spam to Sparsh continued anyway, because
-   * each one still called updateLead/updateCustomer unconditionally right after. */
+   * ensureLeadOnce. updateLead/updateCustomer appear to trigger Finfinity's own lead notification
+   * every time they run — confirmed 2026-10-31 by 5 "Start over" conversations for the same
+   * returning customer correctly reusing the same real builderLeadId (lead creation itself was NOT
+   * duplicated), yet the email spam to Sparsh continued anyway. Callers should still sync on a
+   * reused lead when the financials actually changed (see lastSyncedFinancialsJson below) — only a
+   * byte-for-byte-identical revisit should skip it entirely. */
   reused?: boolean;
+  /** Whatever was last successfully synced onto this lead (see Lead.lastSyncedFinancialsJson's own
+   * comment in schema.prisma) — undefined on a genuinely new lead (nothing synced yet), so callers
+   * naturally always sync the first time. */
+  lastSyncedFinancialsJson?: string | null;
 }
 
 /** Everything updatelead accepts — the fields getcustomeroffers actually needs to compute a real
@@ -255,7 +259,12 @@ export async function ensureLeadOnce(input: EnsureLeadInput): Promise<LeadSyncRe
   // a double-click or a retried request after a network blip shouldn't create a second real lead.)
   const existingHere = await prisma.lead.findUnique({ where: { conversationId: input.conversationId } });
   if (existingHere) {
-    return { builderLeadId: existingHere.builderLeadId, status: existingHere.builderSyncStatus as LeadSyncResult['status'], reused: true };
+    return {
+      builderLeadId: existingHere.builderLeadId,
+      status: existingHere.builderSyncStatus as LeadSyncResult['status'],
+      reused: true,
+      lastSyncedFinancialsJson: existingHere.lastSyncedFinancialsJson,
+    };
   }
 
   const leadRowData = (builderLeadId: string | null, builderSyncStatus: LeadSyncResult['status']): Prisma.LeadUncheckedCreateInput => ({
@@ -288,7 +297,7 @@ export async function ensureLeadOnce(input: EnsureLeadInput): Promise<LeadSyncRe
         { event: 'lead_reused_existing', conversationId: input.conversationId, remoteCustomerId: input.remoteCustomerId, product: input.product, builderLeadId: prior.builderLeadId },
         'reusing an already-created real lead for this customer+product instead of creating a duplicate',
       );
-      return { builderLeadId: prior.builderLeadId, status: 'synced', reused: true };
+      return { builderLeadId: prior.builderLeadId, status: 'synced', reused: true, lastSyncedFinancialsJson: prior.lastSyncedFinancialsJson };
     }
   }
 
@@ -300,11 +309,19 @@ export async function ensureLeadOnce(input: EnsureLeadInput): Promise<LeadSyncRe
   } catch (err) {
     if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
       const winner = await prisma.lead.findUnique({ where: { conversationId: input.conversationId } });
-      return { builderLeadId: winner?.builderLeadId ?? result.builderLeadId, status: 'synced', rm: result.rm };
+      return { builderLeadId: winner?.builderLeadId ?? result.builderLeadId, status: 'synced', rm: result.rm, lastSyncedFinancialsJson: winner?.lastSyncedFinancialsJson };
     }
     throw err;
   }
   return result;
+}
+
+/** Records what was just successfully pushed onto this lead (see homeLoan.ts's ensureLead, the
+ * only caller) so the NEXT time this lead gets reused — same conversation or a fresh one — we know
+ * whether anything has actually changed since, instead of either always skipping the sync (the
+ * 2026-11-10 staleness bug) or always running it (the original 2026-10-31 RM-email-spam problem). */
+export async function markLeadFinancialsSynced(conversationId: string, snapshotJson: string): Promise<void> {
+  await prisma.lead.update({ where: { conversationId }, data: { lastSyncedFinancialsJson: snapshotJson } });
 }
 
 /** Has the RM-summary email already gone out for this exact customer+product, in ANY conversation?

@@ -104,3 +104,8 @@ class RealGoldLeadService implements GoldLeadService {
 }
 
 export const goldLeadService: GoldLeadService = env.FINFINITY_API_BASE_URL ? new RealGoldLeadService() : new MockGoldLeadService();
+// Exported separately (not merged into goldLeadService's own routing, since this call site is the
+// only one with the customer's pan/mobile handy — see routes/chat.ts's gold-submit) so a
+// SANDBOX_TEST_PAN/SANDBOX_TEST_MOBILE customer (config/sandbox.ts) never reaches the real
+// muthootleadgeneration/setmuthootlenderoffer calls, even in production.
+export const sandboxGoldLeadService: GoldLeadService = new MockGoldLeadService();

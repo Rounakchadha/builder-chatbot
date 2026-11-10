@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Finfinity App — UAT SDK Demo</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh;
+    display: grid; justify-items: center; align-content: center; gap: 18px;
+    padding: 24px; text-align: center;
+    background: #0E1613; color: #EAF2EC;
+    font-family: system-ui, sans-serif;
+  }
+  h1 { font-size: 22px; margin: 0; }
+  p { margin: 0; max-width: 460px; color: #9FB3A9; font-size: 13px; line-height: 1.5; }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; margin-top: 8px; }
+  button {
+    font: 500 14px/1 system-ui, sans-serif;
+    padding: 12px 20px; border-radius: 100px; border: 1px solid #2E4A3D;
+    background: #16221D; color: #EAF2EC; cursor: pointer;
+  }
+  button:hover { background: #1E2E26; }
+  #status { font-size: 12px; color: #6FA389; min-height: 16px; }
+</style>
+</head>
+<body>
+  <h1>Finfinity App — "Check Eligibility" button</h1>
+  <p>
+    Stands in for Finfinity's own app. On click, this page locks the product + mobile already on
+    file for this (fake) logged-in customer into one encrypted token — using AES-256-GCM and a
+    shared secret, the exact same way a real partner's BACKEND would do it — then opens the widget
+    with it. No call to our server happens before the widget opens; OTP still runs normally inside it.
+  </p>
+  <div class="row">
+    <button type="button" id="open-home-loan">Check Home Loan eligibility</button>
+    <button type="button" id="open-personal-loan">Check Personal Loan eligibility</button>
+    <button type="button" id="open-blank">Open with nothing prefilled</button>
+  </div>
+  <div id="status"></div>
+
+  <!-- UAT-only demo shortcut: the "shared secret" here is mint'd client-side, in this page's own
+       JS, purely so this one demo page needs no backend of its own to show the flow working. A REAL
+       partner integration must do this encryption step on their BACKEND only — the secret must
+       never ship inside any real partner's frontend bundle, or anyone could mint their own tokens.
+       Matches EXTERNAL_SDK_SECRET on the server (server/src/config/env.ts) — empty string here
+       because that's this UAT server's current (unset) default; see launchToken.service.ts. -->
+  <script src="./widget-finfinity.js?v=20261102d" data-api-base="http://192.168.1.121:8091" data-hide-launcher="true" defer></script>
+  <script>
+    const SHARED_SECRET = ''; // matches the UAT server's unset EXTERNAL_SDK_SECRET default
+    const statusEl = document.getElementById('status');
+
+    function base64url(bytes) {
+      let binary = '';
+      for (const b of bytes) binary += String.fromCharCode(b);
+      return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    }
+
+    // Mirrors launchToken.service.ts's mintLaunchToken() exactly: SHA-256(secret) as the AES-256
+    // key, a random 12-byte IV, and a token layout of iv(12) + authTag(16) + ciphertext — Web
+    // Crypto's AES-GCM output is ciphertext-then-tag, so the tag is moved to the front to match.
+    async function mintLaunchToken(payload) {
+      const enc = new TextEncoder();
+      const keyBytes = await crypto.subtle.digest('SHA-256', enc.encode(SHARED_SECRET));
+      const key = await crypto.subtle.importKey('raw', keyBytes, 'AES-GCM', false, ['encrypt']);
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const plaintext = enc.encode(JSON.stringify({ ...payload, iat: Date.now() }));
+      const encrypted = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv, tagLength: 128 }, key, plaintext));
+      const ciphertext = encrypted.slice(0, encrypted.length - 16);
+      const authTag = encrypted.slice(encrypted.length - 16);
+      const combined = new Uint8Array(iv.length + authTag.length + ciphertext.length);
+      combined.set(iv, 0);
+      combined.set(authTag, iv.length);
+      combined.set(ciphertext, iv.length + authTag.length);
+      return base64url(combined);
+    }
+
+    async function openWithPrefill(prefill) {
+      statusEl.textContent = '';
+      const launchToken = await mintLaunchToken(prefill);
+      window.__lcWidgetInstance?.open(launchToken);
+    }
+
+    window.addEventListener('DOMContentLoaded', () => {
+      document.getElementById('open-home-loan').onclick = () =>
+        openWithPrefill({ product: 'Home loan', mobile: '8879097987' });
+      document.getElementById('open-personal-loan').onclick = () =>
+        openWithPrefill({ product: 'Personal Loan', mobile: '8879097987' });
+      document.getElementById('open-blank').onclick = () => window.__lcWidgetInstance?.open();
+    });
+  </script>
+</body>
+</html>

@@ -125,6 +125,10 @@ export class ChatWidget {
   private startRetryCount = 0;
   private hostEl: HTMLElement | null = null;
   private cleanupFns: Array<() => void> = [];
+  /** Set only by a launchToken passed into open() — a one-time, server-to-server-issued value (see
+   * externalLaunch.service.ts), never persisted to localStorage like STORAGE_KEY/IDENTITY_STORAGE_KEY
+   * above, since it's single-use and tied to this one open() call, not something to resume later. */
+  private launchToken: string | null = null;
 
   private panelEl!: HTMLDivElement;
   private launcherEl!: HTMLButtonElement;
@@ -305,7 +309,14 @@ export class ChatWidget {
 
   /** Opens the panel from outside — for a host page that passed `hideLauncher: true` and wants to
    * trigger this widget from its own existing chat-entry-point UI instead of this widget's launcher. */
-  open(): void {
+  /** `launchToken` (2026-11-02, UAT SDK — see externalLaunch.service.ts): Finfinity's OWN app's
+   * frontend gets this from its own backend's call to POST /api/external/sessions, then passes it
+   * straight here when opening the widget — pre-filling product/mobile/email so the customer isn't
+   * asked for what that app already knows. Only read if this is the very first start() this
+   * instance makes (no stored sessionToken yet); ignored on every later open() call in the same
+   * page session, same as identityToken/STORAGE_KEY never resetting mid-session. */
+  open(launchToken?: string): void {
+    if (launchToken) this.launchToken = launchToken;
     this.toggle(true);
   }
 
@@ -343,7 +354,7 @@ export class ChatWidget {
     try {
       const resp = this.sessionToken
         ? await this.api.send({ sessionToken: this.sessionToken })
-        : await this.api.send({ identityToken: safeGetItem(IDENTITY_STORAGE_KEY) ?? undefined });
+        : await this.api.send({ identityToken: safeGetItem(IDENTITY_STORAGE_KEY) ?? undefined, launchToken: this.launchToken ?? undefined });
       if (gen !== this.requestGen) return; // a newer request (e.g. Start over) began while this one was in flight
       this.startRetryCount = 0;
       this.sessionToken = resp.sessionToken;
@@ -546,7 +557,7 @@ export class ChatWidget {
   /** (Re)renders the result card into its own container — kept separate from the sticky chat bar
    * appended after it, so a profile-panel edit can refresh just the numbers without disturbing it. */
   private renderResultInto(result: unknown) {
-    this.resultContainerEl.innerHTML = renderResultCard(result as any);
+    this.resultContainerEl.innerHTML = renderResultCard(result as any, this.opts.apiBaseUrl);
     const restartBtn = this.resultContainerEl.querySelector<HTMLButtonElement>('#lc-btn-restart');
     if (restartBtn) restartBtn.onclick = () => this.restart();
     this.wireResultMinimize();
@@ -580,6 +591,11 @@ export class ChatWidget {
         }
         if (!slot) return;
         if (result.ok) {
+          // Bug fixed 2026-11-02 ("edit still appears to work right after selecting an offer"):
+          // select-offer locks the backend immediately (applicationSubmitted), but the sidebar's
+          // Edit buttons were left in their stale pre-selection state until the next full reload —
+          // refresh it now so they visibly disable too, not just reject the save server-side.
+          void this.profilePanel.refresh();
           if (plCard) {
             // Personal Loan: once one offer is picked, the others no longer matter — hide every
             // other lender card, the "highest eligibility" summary above them (it compared offers
@@ -592,7 +608,7 @@ export class ChatWidget {
             plCard.parentElement?.querySelectorAll<HTMLElement>('[data-pl-lender-card]').forEach((card) => {
               if (card !== plCard) card.style.display = 'none';
             });
-            plCard.innerHTML = lenderThankYouHtml(lenderName, rmName);
+            plCard.innerHTML = lenderThankYouHtml(lenderName, this.opts.apiBaseUrl, rmName);
           } else {
             // Home Loan/LAP: same "nothing else matters once one's picked" treatment as Personal
             // Loan — hide the "highest eligibility" summary and its label, and collapse the whole
@@ -603,7 +619,7 @@ export class ChatWidget {
             const lenderList = this.resultContainerEl.querySelector<HTMLElement>('#lc-lender-list');
             if (highestEligibility) highestEligibility.style.display = 'none';
             if (lenderListLabel) lenderListLabel.style.display = 'none';
-            if (lenderList) lenderList.innerHTML = lenderThankYouHtml(lenderName, rmName);
+            if (lenderList) lenderList.innerHTML = lenderThankYouHtml(lenderName, this.opts.apiBaseUrl, rmName);
           }
         } else {
           slot.innerHTML = `<div class="lc-gold-submit-confirmed">Couldn't select this offer right now — please try again shortly.</div>`;

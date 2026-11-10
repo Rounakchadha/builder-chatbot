@@ -27,6 +27,13 @@ COPY --from=build /app/server ./server
 # @fastify/static registration) so the public domain's existing Apache config (ProxyPass / -> :8091)
 # works with no vhost changes needed.
 COPY test-page ./test-page
+# Bug fixed 2026-11-07: a named volume mounted at a path with NO existing content in the image gets
+# created fresh by the Docker daemon, owned by root — not inherited from the `node` user this
+# container actually runs as (see USER below). That broke logging in production (EACCES, crash loop)
+# the moment lib/logger.ts started writing to LOG_DIR. Pre-creating the directory here, BEFORE the
+# chown -R below, means the volume is populated (with correct ownership already applied) from the
+# image's own content the first time it's ever created — not left for Docker to default to root.
+RUN mkdir -p /app/server/logs
 # Runs as a dedicated non-root user rather than the image's default root (security-review finding,
 # 2026-10-23) — limits what's reachable if the container is ever compromised. `node` user already
 # exists in the official node:20-slim image; just needs ownership of what it'll actually touch.

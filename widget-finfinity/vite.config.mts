@@ -22,7 +22,9 @@ export default defineConfig({
     },
     cssCodeSplit: false,
     outDir: 'dist',
-    assetsInlineLimit: 300_000,
+    // Lender logos are no longer imported into the source at all (security-review finding,
+    // 2026-11-02 — see widget/vite.config.mts for the full explanation) — they're plain static
+    // files served from the API server and referenced by absolute url instead.
   },
   server: {
     port: 5174,

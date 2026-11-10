@@ -25,8 +25,17 @@ export interface EditableField {
 
 const FOUND_CUSTOMER_EDITABLE_KEYS = new Set(['income', 'emi']);
 
+/** Once a real application has gone in (an explicit lender-offer selection, a Gold Loan submit
+ * click, or a Business Loan/LAS lead actually created — see where `applicationSubmitted` gets set
+ * in routes/chat.ts and the blResult/lasResult steps), nothing about it is editable here anymore —
+ * the data has already left for the lender/Finfinity's own records. Only starting a brand-new
+ * conversation (a fresh session has no `applicationSubmitted` at all) brings editing back. */
+function notSubmitted(ctx: StepContext): boolean {
+  return ctx.answers.applicationSubmitted !== true;
+}
+
 function editableForFoundOrNot(key: EditableField['key']) {
-  return (ctx: StepContext) => ctx.answers.dedupeFound !== true || FOUND_CUSTOMER_EDITABLE_KEYS.has(key);
+  return (ctx: StepContext) => notSubmitted(ctx) && (ctx.answers.dedupeFound !== true || FOUND_CUSTOMER_EDITABLE_KEYS.has(key));
 }
 
 export const EDITABLE_FIELDS: EditableField[] = [
@@ -57,7 +66,7 @@ export const EDITABLE_FIELDS: EditableField[] = [
     key: 'blBusinessAddress',
     label: 'Registered address',
     format: (ctx) => (ctx.answers.blBusinessAddress as string) ?? '',
-    editableFor: () => true,
+    editableFor: notSubmitted,
   },
 ];
 
