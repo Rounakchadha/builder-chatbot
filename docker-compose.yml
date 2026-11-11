@@ -41,14 +41,11 @@ services:
       DATABASE_URL: postgresql://loanbot:loanbot@postgres:5432/loanbot_v1
       REDIS_URL: redis://redis:6379
       PORT: '8080'
-      # TEMPORARY UAT-testing-only workaround (2026-09-24): this server's own network path to
-      # backend.uatfinfinity.in goes through something (a hosting-provider/corporate proxy, most
-      # likely) presenting a self-signed certificate Node doesn't trust, which blocks every real
-      # API call with "self-signed certificate in certificate chain". This disables TLS certificate
-      # verification for the whole container so testing isn't blocked. Do NOT carry this into
-      # production or once real customer PII is flowing — the proper fix is adding whatever CA
-      # certificate is actually doing the interception to the container's trusted store instead.
-      NODE_TLS_REJECT_UNAUTHORIZED: '0'
+      # The UAT branch's docker-compose.yml disables TLS certificate verification here as a
+      # workaround for a proxy on that server's own network path — deliberately NOT carried onto
+      # this prod branch (real customer PII flows through here; if prod's network path has the same
+      # self-signed-cert issue, fix it by trusting the actual intercepting CA cert instead of
+      # disabling verification).
       # Bug fixed 2026-11-07 — logs used to only live in the container's own stdout, which `deploy.sh`
       # throws away every time it recreates this container (see lib/logger.ts's own comment on why).
       # Pointed at a named volume (below) instead of the container's writable layer, so a deploy no

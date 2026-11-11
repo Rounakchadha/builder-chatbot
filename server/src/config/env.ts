@@ -58,6 +58,28 @@ const EnvSchema = z.object({
   // Set to false only once RealBureauService.pull() actually exists.
   FINFINITY_BUREAU_MOCK_OVERRIDE: zBoolEnv('true'),
 
+  // Lead-creation endpoint and campaign code — both change on the prod backend (2026-10-31 notes
+  // from Bitsflow: "only replace endpoint blostem"). Defaulted to the UAT values so nothing changes
+  // there; prod's own .env sets FINFINITY_LEAD_ENDPOINT=/leadflow/blostem and
+  // FINFINITY_CAMPAIGN_CODE=CIS. Not yet confirmed whether blostem's request/response shape is a
+  // pure rename of create_anacity_lead or genuinely different — verify with a real lead before
+  // relying on this in prod (see lead.service.ts).
+  FINFINITY_LEAD_ENDPOINT: z.string().optional().default('/leadflow/create_anacity_lead'),
+  FINFINITY_CAMPAIGN_CODE: z.string().optional().default('anacity'),
+
+  // Prod-only "client token" step (2026-10-31 notes from Bitsflow): a new POST /client-token/ call,
+  // no OTP involved, done once at the very start of the flow, returning a token used the same way
+  // the OTP-derived access token is used everywhere else today (see finfinityClient.ts's doc
+  // comment). Two client_id/client_secret pairs were handed over with no confirmation of which is
+  // which — left as a single configurable pair here rather than guessing; confirm with Bitsflow
+  // before setting these on the real prod server. Unset = this step is skipped entirely (safe
+  // no-op, same convention as every other FINFINITY_* toggle in this file) — see
+  // services/clientToken.service.ts, which is NOT yet wired into any flow's auth (see that file's
+  // own doc comment for why).
+  FINFINITY_CLIENT_TOKEN_URL: z.string().optional().default('/client-token/'),
+  FINFINITY_CLIENT_ID: z.string().optional().default(''),
+  FINFINITY_CLIENT_SECRET: z.string().optional().default(''),
+
   // Standalone Personal Loan eligibility pre-check (Poonawala Fincorp/Tata Capital/Unity SFB) —
   // see FINFINITY-BRE-MAIN/pl-eligibility-precheck. A SEPARATE service from everything else above;
   // unset keeps personalLoanEligibility.service.ts on the "always eligible" mock, same as every

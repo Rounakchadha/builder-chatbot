@@ -117,9 +117,9 @@ export const PRODUCT_CODE: Record<string, string> = {
 // Confirmed live against UAT (2026-09-23): "FINFINITY" (the docs' example value) is not a real
 // registered campaign and crashed create_anacity_lead with an internal server error every time
 // ("Error processing UTM params" / "object of type 'NoneType' has no len()") — "anacity" (matching
-// the endpoint's own name) is a real one and works. Ask the dev team for the actual production
-// campaign code once one exists; this is a UAT-testing value.
-const CAMPAIGN_CODE = 'anacity';
+// the endpoint's own name) is a real one and works. Env-configurable (see config/env.ts) since prod
+// uses its own campaign code ("CIS") — defaults to the UAT value so nothing changes there.
+const CAMPAIGN_CODE = env.FINFINITY_CAMPAIGN_CODE;
 
 interface CreateLeadResponse {
   leadid: number;
@@ -146,7 +146,7 @@ class RealLeadService implements LeadService {
     // retryOnTransient: false — this creates a brand-new lead every call; retrying blind after a
     // timeout risks creating a second real lead if the first request actually landed.
     const results = await finfinityClient.post<CreateLeadResponse[]>(
-      '/leadflow/create_anacity_lead',
+      env.FINFINITY_LEAD_ENDPOINT,
       {
         customer_id: profile.remoteCustomerId,
         product_code: productCode,
