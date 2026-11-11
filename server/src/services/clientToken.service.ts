@@ -6,18 +6,23 @@ import { env } from '../config/env';
  * that returns a token, no OTP involved. On UAT this doesn't exist at all; every access token
  * today comes from validateotpv2/validatebureau instead (see finfinityClient.ts's own doc comment).
  *
- * NOT YET WIRED INTO ANY FLOW. Two open questions block that:
- *   1. Whether this token REPLACES the OTP-derived token everywhere, or is used ALONGSIDE the
- *      customer's own mobile OTP step for a different purpose (e.g. app-level auth vs.
- *      customer-level auth) — the two client_id/client_secret pairs we were given were never
- *      confirmed as to which is which, or whether both are even meant to be used (see
- *      FINFINITY_CLIENT_ID/FINFINITY_CLIENT_SECRET in config/env.ts).
- *   2. The real request/response shape of POST /client-token/ was never confirmed with Bitsflow —
+ * Wired in (2026-11-11) for exactly one case: routes/chat.ts's beginNewSession calls this when an
+ * SDK launch token claims `verified: true` — CIS is vouching that this customer is already
+ * identity-checked on their end, so we skip our own OTP and use this token to authorize the
+ * dedupeCheck/searchcustomer call instead (same mechanism identityToken-resumed sessions already
+ * use — see that file's own comment). An unverified or absent launch token is completely
+ * unaffected — OTP runs exactly as it does today.
+ *
+ * Still unconfirmed, flagged rather than guessed at:
+ *   1. The real request/response shape of POST /client-token/ was never confirmed with Bitsflow —
  *      the shape below is a best guess (client_id/client_secret in, an access token out), not a
  *      verified contract. Same discipline as RealBureauApi.fetchBureauData's own unconfirmed
- *      response shape (see that file) — don't let this quietly become load-bearing on a guess.
- *
- * Confirm both with Bitsflow against a real prod call before wiring this into any flow's auth. */
+ *      response shape (see that file).
+ *   2. Only one client_id/client_secret pair is configured (FINFINITY_CLIENT_ID/_SECRET below) —
+ *      we were given two with no confirmation of which is which; use whichever Bitsflow confirms.
+ *   3. Known gap: this only works for a customer dedupeCheck FINDS. A customer it does NOT find
+ *      has no other way in this flow to get a remoteCustomerId once OTP is skipped — see
+ *      routes/chat.ts's own comment at the call site. */
 
 interface ClientTokenResponse {
   access_token: string;

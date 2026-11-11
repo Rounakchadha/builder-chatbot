@@ -20,6 +20,7 @@ import { env } from '../config/env';
 import { emailService } from '../services/email.service';
 import { recallIdentity } from '../services/identity.service';
 import { verifyLaunchToken } from '../services/launchToken.service';
+import { fetchClientToken } from '../services/clientToken.service';
 import { searchEmployers } from '../services/employer.service';
 import { hmacLookup, maskMobile, maskPan } from '../lib/crypto';
 import { logger } from '../lib/logger';
@@ -64,10 +65,7 @@ async function beginNewSession(ip: string, userAgent: string | undefined, identi
 
   // SDK launch token (see launchToken.service.ts) — a partner's own backend encrypts a customer's
   // product/mobile/email with a shared secret and hands the result straight to the widget; no API
-  // call to us is involved in minting it at all. This is a SUGGESTION, not a verified identity: OTP
-  // still runs normally against whatever mobile number was prefilled (unlike identityToken above,
-  // which carries an already-verified Finfinity access token and so can skip OTP entirely).
-  // `verified` is deliberately NOT honored here yet — see launchToken.service.ts's doc comment.
+  // call to us is involved in minting it at all.
   // `name` (2026-11-03 instruction: "dont use it anywhere yet... dont show the name they give us
   // also") — stored ONLY as prefilledName, never into answers.name, so nothing anywhere displays
   // it or treats it as the customer's actual name yet. It's kept purely so homeLoan.ts's
@@ -89,6 +87,32 @@ async function beginNewSession(ip: string, userAgent: string | undefined, identi
       if (prefill.email) ctxAnswers.email = prefill.email;
       if (prefill.name) ctxAnswers.prefilledName = prefill.name;
       if (prefill.product || prefill.mobile || prefill.email) ctxAnswers.intent = CHECK_ELIGIBILITY;
+
+      // 2026-11-11 instruction: "if cis sends us a person is verified then run the no otp flow
+      // with the client token if they do not then run the prod apis with the otp step." —
+      // `verified: true` + a mobile number is what unlocks this; a prefilled mobile with no
+      // verification claim still goes through OTP normally (unchanged behavior above).
+      // Pre-seeding finfinityAccessToken here is what skips OTP: every OTP step's own
+      // isApplicable check is `needsIdentityOtp(...) && !ctx.answers.finfinityAccessToken` (see
+      // homeLoan.ts), so once this is set, those steps simply don't run, and dedupeCheck proceeds
+      // straight to searchcustomer using this token for auth, the same way an identityToken-resumed
+      // session already does above.
+      //
+      // Known gap, not yet resolved: this only works cleanly for a customer dedupeCheck FINDS
+      // (searchcustomer returns a real remoteCustomerId). For a customer dedupeCheck does NOT find,
+      // today's code only ever learns a new remoteCustomerId as a side effect of validateotpv2
+      // (the OTP step we're skipping here) — there's no other call site in this flow that creates
+      // one. Until that's resolved with Bitsflow, a CIS-verified customer who is genuinely new to
+      // Finfinity will likely fail later (PAN lookup/lead creation both need remoteCustomerId).
+      // Flagged rather than guessed at — test this exact case before relying on it.
+      if (prefill.verified && prefill.mobile) {
+        const clientToken = await fetchClientToken();
+        if (clientToken) {
+          ctxAnswers.finfinityAccessToken = clientToken;
+        } else {
+          logger.warn({ event: 'launch_token_verified_no_client_token' }, 'launch token claimed verified but no client token is configured/available — falling back to the normal OTP flow');
+        }
+      }
     }
   }
 

@@ -16,10 +16,11 @@ import { env } from '../config/env';
  * only ever look at it once — the moment the widget sends its very first message to actually start
  * the chat, which was always going to happen anyway.
  *
- * UAT-only today: mobile is a SUGGESTION, not a verified identity — OTP still runs normally against
- * whatever number was decrypted here. `verified` is accepted and carried through but deliberately
- * NOT wired to skip OTP yet; honoring it to skip verification entirely is a bigger trust decision
- * than prefill-to-save-typing and needs its own explicit sign-off before it does anything.
+ * mobile is a SUGGESTION by default — OTP still runs normally against whatever number was
+ * decrypted here. `verified: true` (2026-11-11) is the one exception: routes/chat.ts's
+ * beginNewSession honors it by fetching a client-level token (see clientToken.service.ts) and
+ * using THAT to skip OTP instead, on the understanding that the partner has already verified this
+ * customer on their own end. False/absent `verified` is unaffected.
  */
 const MAX_TOKEN_AGE_MS = 30 * 60 * 1000; // minted well before the click is fine (e.g. at login) —
 // this is just a replay window, not a "redeem within seconds" deadline like the old design's TTL.
