@@ -34,6 +34,7 @@ rsync -rlvz --delete \
   --exclude '*.xlsx' \
   --exclude 'dump.rdb' \
   --exclude '.claude' \
+  --exclude 'server/.env.prod' \
   -e "ssh -i $SSH_KEY" \
   "$LOCAL_PATH" "$SERVER_USER@$SERVER_HOST:$SERVER_PATH/"
 

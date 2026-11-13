@@ -58,6 +58,13 @@ const EnvSchema = z.object({
   // Set to false only once RealBureauService.pull() actually exists.
   FINFINITY_BUREAU_MOCK_OVERRIDE: zBoolEnv('true'),
 
+  // Prod-only "no OTP needed" client-level token — see clientToken.service.ts's own doc comment.
+  // Blank by default (UAT-safe no-op); confirmed live 2026-11-12 which of the two credential pairs
+  // Bitsflow gave actually works on prod.
+  FINFINITY_CLIENT_TOKEN_URL: z.string().optional().default('/client-token/'),
+  FINFINITY_CLIENT_ID: z.string().optional().default(''),
+  FINFINITY_CLIENT_SECRET: z.string().optional().default(''),
+
   // Standalone Personal Loan eligibility pre-check (Poonawala Fincorp/Tata Capital/Unity SFB) —
   // see FINFINITY-BRE-MAIN/pl-eligibility-precheck. A SEPARATE service from everything else above;
   // unset keeps personalLoanEligibility.service.ts on the "always eligible" mock, same as every

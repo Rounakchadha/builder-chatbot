@@ -95,6 +95,15 @@ export interface ProfileField {
 }
 
 export const PROFILE_FIELDS: ProfileField[] = [
+  // Listed first (2026-11-12 instruction) — with cross-product session memory now in play, a
+  // customer can have several products' conversations going at once, so which product this panel
+  // is even showing details FOR needs to be the first thing visible, not buried below the name.
+  {
+    key: 'product',
+    label: 'Product',
+    editable: () => false,
+    format: (ctx) => (ctx.answers.product ? `${ctx.answers.product}${ctx.answers.loanType ? ` — ${ctx.answers.loanType}` : ''}` : ''),
+  },
   { key: 'name', label: 'Name', editable: () => false, format: (ctx) => (ctx.answers.name as string) ?? '' },
   { key: 'mobile', label: 'Mobile', editable: () => false, format: (ctx) => (ctx.answers.mobile ? `+91 ${maskMobile(ctx.answers.mobile as string)}` : '') },
   { key: 'pan', label: 'PAN', editable: () => false, format: (ctx) => (ctx.answers.pan ? maskPan(ctx.answers.pan as string) : '') },
@@ -104,12 +113,6 @@ export const PROFILE_FIELDS: ProfileField[] = [
   { key: 'blBusinessType', label: 'Entity type', editable: () => false, format: (ctx) => (ctx.answers.blBusinessType as string) ?? '' },
   { key: 'blGstNumber', label: 'GST number', editable: () => false, format: (ctx) => (ctx.answers.blGstNumber as string) ?? '' },
   { key: 'blOfficeAddress', label: 'Office address', editable: () => false, format: (ctx) => (ctx.answers.blOfficeAddress as string) ?? '' },
-  {
-    key: 'product',
-    label: 'Product',
-    editable: () => false,
-    format: (ctx) => (ctx.answers.product ? `${ctx.answers.product}${ctx.answers.loanType ? ` — ${ctx.answers.loanType}` : ''}` : ''),
-  },
   { key: 'propertyType', label: 'Property type', editable: () => false, format: (ctx) => (ctx.answers.propertyType as string) ?? '' },
   { key: 'collateralType', label: 'Collateral type', editable: () => false, format: (ctx) => (ctx.answers.collateralType as string) ?? '' },
   { key: 'occupancy', label: 'Occupancy', editable: () => false, format: (ctx) => (ctx.answers.occupancy as string) ?? '' },

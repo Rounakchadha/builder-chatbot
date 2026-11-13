@@ -254,6 +254,15 @@ export interface EnsureLeadInput extends LeadProfile {
  * local Lead row for THIS conversation (status-check/profile-sync code looks leads up by
  * conversationId, so this new conversation needs its own row pointing at the same real lead).
  */
+/** Reconstructs the RM shape LeadSyncResult.rm expects from a stored Lead row's rmName/rmPhone/
+ * rmEmail — undefined (not a partially-empty object) unless all three are present, so callers'
+ * existing `lead?.rm ?? { name: 'Our team', ... }` fallback keeps working unchanged for any lead
+ * created before this migration existed. */
+function rmFromRow(row: { rmName: string | null; rmPhone: string | null; rmEmail: string | null }): LeadSyncResult['rm'] {
+  if (!row.rmName || !row.rmPhone || !row.rmEmail) return undefined;
+  return { name: row.rmName, phone: row.rmPhone, email: row.rmEmail };
+}
+
 export async function ensureLeadOnce(input: EnsureLeadInput): Promise<LeadSyncResult> {
   // 1. Already created for THIS exact conversation? (same guard homeLoan.ts's old ensureLead had —
   // a double-click or a retried request after a network blip shouldn't create a second real lead.)
@@ -263,11 +272,12 @@ export async function ensureLeadOnce(input: EnsureLeadInput): Promise<LeadSyncRe
       builderLeadId: existingHere.builderLeadId,
       status: existingHere.builderSyncStatus as LeadSyncResult['status'],
       reused: true,
+      rm: rmFromRow(existingHere),
       lastSyncedFinancialsJson: existingHere.lastSyncedFinancialsJson,
     };
   }
 
-  const leadRowData = (builderLeadId: string | null, builderSyncStatus: LeadSyncResult['status']): Prisma.LeadUncheckedCreateInput => ({
+  const leadRowData = (builderLeadId: string | null, builderSyncStatus: LeadSyncResult['status'], rm?: LeadSyncResult['rm']): Prisma.LeadUncheckedCreateInput => ({
     conversationId: input.conversationId,
     remoteCustomerId: input.remoteCustomerId ?? null,
     product: input.product,
@@ -277,6 +287,9 @@ export async function ensureLeadOnce(input: EnsureLeadInput): Promise<LeadSyncRe
     creditScore: input.creditScore ?? null,
     builderLeadId,
     builderSyncStatus,
+    rmName: rm?.name ?? null,
+    rmPhone: rm?.phone ?? null,
+    rmEmail: rm?.email ?? null,
   });
 
   // 2. A prior lead for the SAME real customer + product, from a DIFFERENT conversation? Only
@@ -288,8 +301,9 @@ export async function ensureLeadOnce(input: EnsureLeadInput): Promise<LeadSyncRe
       orderBy: { createdAt: 'desc' },
     });
     if (prior?.builderLeadId) {
+      const rm = rmFromRow(prior);
       try {
-        await prisma.lead.create({ data: leadRowData(prior.builderLeadId, 'synced') });
+        await prisma.lead.create({ data: leadRowData(prior.builderLeadId, 'synced', rm) });
       } catch (err) {
         if (!(err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002')) throw err;
       }
@@ -297,7 +311,9 @@ export async function ensureLeadOnce(input: EnsureLeadInput): Promise<LeadSyncRe
         { event: 'lead_reused_existing', conversationId: input.conversationId, remoteCustomerId: input.remoteCustomerId, product: input.product, builderLeadId: prior.builderLeadId },
         'reusing an already-created real lead for this customer+product instead of creating a duplicate',
       );
-      return { builderLeadId: prior.builderLeadId, status: 'synced', reused: true, lastSyncedFinancialsJson: prior.lastSyncedFinancialsJson };
+      // Same original RM every time a returning customer's lead is reused — never a placeholder,
+      // never a freshly reassigned one (explicit instruction, 2026-11-13).
+      return { builderLeadId: prior.builderLeadId, status: 'synced', reused: true, rm, lastSyncedFinancialsJson: prior.lastSyncedFinancialsJson };
     }
   }
 
@@ -305,11 +321,11 @@ export async function ensureLeadOnce(input: EnsureLeadInput): Promise<LeadSyncRe
   // second request for this same conversation won the insert a moment ago).
   const result = await leadService.createLead(input);
   try {
-    await prisma.lead.create({ data: leadRowData(result.builderLeadId, result.status) });
+    await prisma.lead.create({ data: leadRowData(result.builderLeadId, result.status, result.rm) });
   } catch (err) {
     if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
       const winner = await prisma.lead.findUnique({ where: { conversationId: input.conversationId } });
-      return { builderLeadId: winner?.builderLeadId ?? result.builderLeadId, status: 'synced', rm: result.rm, lastSyncedFinancialsJson: winner?.lastSyncedFinancialsJson };
+      return { builderLeadId: winner?.builderLeadId ?? result.builderLeadId, status: 'synced', rm: winner ? rmFromRow(winner) : result.rm, lastSyncedFinancialsJson: winner?.lastSyncedFinancialsJson };
     }
     throw err;
   }

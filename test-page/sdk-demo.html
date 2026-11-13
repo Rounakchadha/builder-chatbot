@@ -46,7 +46,7 @@
        never ship inside any real partner's frontend bundle, or anyone could mint their own tokens.
        Matches EXTERNAL_SDK_SECRET on the server (server/src/config/env.ts) — empty string here
        because that's this UAT server's current (unset) default; see launchToken.service.ts. -->
-  <script src="./widget-finfinity.js?v=20261102d" data-api-base="http://192.168.1.121:8091" data-hide-launcher="true" defer></script>
+  <script src="./widget-finfinity.js?v=20261102d" data-api-base="http://localhost:8091" data-hide-launcher="true" defer></script>
   <script>
     const SHARED_SECRET = ''; // matches the UAT server's unset EXTERNAL_SDK_SECRET default
     const statusEl = document.getElementById('status');

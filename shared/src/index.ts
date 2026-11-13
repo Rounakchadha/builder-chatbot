@@ -136,6 +136,17 @@ export const ChatTurnResponse = z.object({
   // sends it back on a future brand-new session to skip asking for mobile+OTP again, as long as
   // it's still within the remembered window (see identity.service.ts).
   identityToken: z.string().optional(),
+  // Which product this turn belongs to, once known (undefined before the product/intent step is
+  // answered) — lets the widget keep each product's visible chat history separate rather than one
+  // merged scrollback across all 5 (2026-11-12 instruction: switching products was showing a
+  // confusing mix of both products' messages/buttons in one log).
+  product: z.string().optional(),
+  // A known customer's "here's what we have on file" recap, re-shown whenever a product session is
+  // cold-resumed past it (see chat.ts's beginNewSession) — kept as its own field, not merged into
+  // botMessage, so the widget renders it as its own separate bot bubble above the current question
+  // instead of one combined message (2026-11-13 instruction: "should be a different msg do not
+  // merge it with the customer profile msg").
+  recapMessage: z.string().optional(),
 });
 export type ChatTurnResponse = z.infer<typeof ChatTurnResponse>;
 
@@ -159,6 +170,14 @@ export const ChatMessageRequest = z.object({
   // + full name + email, all 4 fields CIS actually sends) can exceed — measured ~280 chars worst
   // case. 400 leaves real headroom without being unbounded.
   launchToken: z.string().max(400).optional(),
+  // Only read when starting a brand-new session (no sessionToken) — set ONLY by the widget's own
+  // explicit "Start over" button/confirm dialog (2026-11-13), never by a plain reload or a normal
+  // product-switch open() call. Without this, the server has no way to tell "customer deliberately
+  // wants to restart THIS product" apart from "this is just the very first open() of a brand-new
+  // page load" — both look identical otherwise (no sessionToken, same launchToken) — so a genuine
+  // restart would otherwise still resolve right back to the same in-progress/completed session via
+  // the per-product resume pointer (see profile.service.ts's recallProductSession).
+  forceNew: z.boolean().optional(),
 });
 export type ChatMessageRequest = z.infer<typeof ChatMessageRequest>;
 

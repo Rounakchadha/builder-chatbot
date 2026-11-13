@@ -1,6 +1,7 @@
 import { createHmac, randomUUID } from 'crypto';
 import { env } from '../config/env';
 import { logger } from '../lib/logger';
+import { pincodeService } from './pincode.service';
 
 const REQUEST_TIMEOUT_MS = 10_000;
 
@@ -43,6 +44,19 @@ export interface LeadCreatedWebhookInput {
 export async function sendLeadCreatedWebhook(input: LeadCreatedWebhookInput): Promise<void> {
   if (!env.CIS_WEBHOOK_URL) return;
 
+  // Bug fixed 2026-11-13: `city` only ever came from ctx.answers.pincodeArea, which is set
+  // EXCLUSIVELY by the interactive 'pincode' step's own onAnswer (pincodeService.lookupArea) — a
+  // customer dedupeCheck already FOUND never goes through that step at all (their pincode comes
+  // straight from searchcustomer instead), so city was always sent as an empty string for them.
+  // Confirmed live: CIS's webhook rejects that outright with a 422 ("city: String should have at
+  // least 1 character"), silently losing the whole lead notification for every found customer.
+  // Deriving it fresh here, from whatever pincode IS known, covers that gap for every product at
+  // once rather than each flow's own call site needing to remember to do this itself.
+  let city = input.city;
+  if (!city && input.pincode) {
+    city = (await pincodeService.lookupArea(input.pincode).catch(() => null)) ?? undefined;
+  }
+
   const body = {
     event_type: 'LEAD_CREATED',
     event_id: `FIN-EVT-${randomUUID()}`,
@@ -56,7 +70,7 @@ export async function sendLeadCreatedWebhook(input: LeadCreatedWebhookInput): Pr
     requested_amount: input.loanAmount ?? 0,
     employment_type: input.segment ?? '',
     monthly_income: input.monthlyIncome ?? 0,
-    city: input.city ?? '',
+    city: city ?? '',
     pincode: input.pincode ?? '',
     status: 'LEAD_CREATED',
   };

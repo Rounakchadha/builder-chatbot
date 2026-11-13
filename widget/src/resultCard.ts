@@ -168,7 +168,6 @@ function goldSubmitCardHtml(best: LenderOffer, apiBase: string, isEstimate?: boo
       <div class="lc-gold-submit-top">
         <div class="lc-gold-submit-logo">${logoHtml(best.name, apiBase)}</div>
         <div class="lc-gold-submit-lender">${best.name}</div>
-        ${isEstimate ? '<span class="lc-best-tag">Estimate</span>' : ''}
       </div>
       <!-- Submit button moved onto the same line as the amount (2026-11-02 direct instruction —
            was its own centered line below the stats grid, which read as floating far away from

@@ -5,7 +5,7 @@ import { prisma } from '../lib/prisma';
 import { redis } from '../lib/redis';
 import { encryptPii, decryptPii } from '../lib/crypto';
 
-const SESSION_TTL_SECONDS = 30 * 60; // sliding window — "context not wasted" for a short return visit
+const SESSION_TTL_SECONDS = 10 * 60; // sliding window — "context not wasted" for a short return visit
 
 // Security-review finding, 2026-10-23: Postgres-rehydration below had no age cutoff at all — a
 // `sessionToken` from months ago, leaked however (a shared/public device, a logged URL, a browser

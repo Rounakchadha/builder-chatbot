@@ -18,3 +18,7 @@ cibil_profile.txt
 # Redis's own on-disk snapshot dumps (local dev only — never anything to commit or deploy).
 dump.rdb
 server/dump.rdb
+
+# Real prod secrets/credentials — never commit this (deploy.sh also explicitly excludes it from
+# the UAT rsync, 2026-11-13 security-review finding).
+server/.env.prod

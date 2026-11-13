@@ -3,7 +3,7 @@ import { ChatMessageRequest, CHECK_ELIGIBILITY, CHECK_EXISTING_APPLICATION, LOAN
 import { applicablePath, getStep, nextStepId, renderStep } from '../flow-engine/engine';
 import type { StepContext } from '../flow-engine/types';
 import { mainFlow } from '../flows';
-import { recomputeEligibility, createLeadFromResult } from '../flows/homeLoan';
+import { recomputeEligibility, createLeadFromResult, renderFoundProfileSummary } from '../flows/homeLoan';
 import { buildGoldLoanRmDetails } from '../flows/goldLoan';
 import { buildLasRmDetails } from '../flows/loanAgainstShares';
 import { buildBusinessLoanRmDetails } from '../flows/businessLoan';
@@ -19,7 +19,9 @@ import { personalLoanFinancerService, type PlFinancerLenderEntry } from '../serv
 import { env } from '../config/env';
 import { emailService } from '../services/email.service';
 import { recallIdentity } from '../services/identity.service';
+import { recallProfile, recallProductSession, rememberProductSession, forgetProductSession } from '../services/profile.service';
 import { verifyLaunchToken } from '../services/launchToken.service';
+import { fetchClientToken } from '../services/clientToken.service';
 import { searchEmployers } from '../services/employer.service';
 import { hmacLookup, maskMobile, maskPan } from '../lib/crypto';
 import { logger } from '../lib/logger';
@@ -29,6 +31,10 @@ import { redis } from '../lib/redis';
 import { z } from 'zod';
 
 const FLOW = mainFlow;
+
+// 2026-11-13 instruction: a per-product session left untouched this long auto-starts fresh on next
+// open instead of resuming the old chat — see its use in beginNewSession's resume block below.
+const RESUME_IDLE_MS = 10 * 60 * 1000;
 
 function toCtx(state: SessionState, ip: string, userAgent?: string): StepContext {
   return { answers: state.answers, conversationId: state.conversationId, meta: { ip, userAgent } };
@@ -42,7 +48,7 @@ const RESTART_PATTERN = /^(start\s*over|restart(\s*(the\s*)?(chat|conversation|e
  * verified mobile+OTP within the last 10 minutes skip straight past both — see
  * identity.service.ts and the 'intent'/'mobile'/'triggerOtpDedupe'/'otpDedupe' step guards in
  * homeLoan.ts. An unrecognized/expired/missing token just falls back to a normal blank session. */
-async function beginNewSession(ip: string, userAgent: string | undefined, identityToken?: string, launchToken?: string): Promise<ChatTurnResponse> {
+async function beginNewSession(ip: string, userAgent: string | undefined, identityToken?: string, launchToken?: string, forceNew?: boolean): Promise<ChatTurnResponse> {
   const ctxAnswers: Record<string, unknown> = {};
   let mobileHash: string | undefined;
   let mobileMasked: string | undefined;
@@ -74,6 +80,7 @@ async function beginNewSession(ip: string, userAgent: string | undefined, identi
   // panNameMismatchChoice fuzzy-match feature has something to compare against the moment it's
   // switched on (see HOME_LOAN_NAME_MISMATCH_CHECK_ENABLED) — until then this field is otherwise
   // completely inert.
+  let prefillVerified = false;
   if (launchToken) {
     const prefill = verifyLaunchToken(launchToken);
     if (prefill) {
@@ -89,11 +96,128 @@ async function beginNewSession(ip: string, userAgent: string | undefined, identi
       if (prefill.email) ctxAnswers.email = prefill.email;
       if (prefill.name) ctxAnswers.prefilledName = prefill.name;
       if (prefill.product || prefill.mobile || prefill.email) ctxAnswers.intent = CHECK_ELIGIBILITY;
+      prefillVerified = Boolean(prefill.verified);
+    }
+  }
+
+  // Cross-product memory (2026-11-12 instruction): CIS embeds 5 product buttons on one page, each
+  // opening its own launch token for the SAME customer. `mobile`/`product` are both known by this
+  // point (from identityToken above or the launchToken just above) whenever this matters at all —
+  // see profile.service.ts's own doc comment for why this is a separate, server-only cache from
+  // identityToken rather than an extension of it.
+  const mobileForProfile = ctxAnswers.mobile as string | undefined;
+  const productForProfile = ctxAnswers.product as string | undefined;
+
+  // forceNew (2026-11-13 — set ONLY by the widget's explicit "Start over" button, see
+  // ChatMessageRequest's own doc comment): a deliberate restart must not resolve right back to the
+  // same in-progress/completed session via the resume pointer below, and must re-ask everything
+  // rather than silently reusing cached PAN/pincode/income/etc. too — "only start new when the
+  // customer selects start new" means a genuine restart really does start over, not a disguised
+  // resume. Explicitly forgetting the stale pointer (not just skipping the lookup) stops it from
+  // resurfacing the next time this product's launch token is opened.
+  if (forceNew && mobileForProfile && productForProfile) {
+    void forgetProductSession(mobileForProfile, productForProfile);
+  }
+
+  if (!forceNew && mobileForProfile && productForProfile) {
+    const existing = await recallProductSession(mobileForProfile, productForProfile);
+    if (existing) {
+      const existingState = await loadSession(existing.sessionToken);
+      if (existingState) {
+        // Idle-expiry (2026-11-13 instruction: "past 10 mins if someones session is still open
+        // reload it to new automatically" — reported after reopening a product 10 minutes later
+        // and still landing on the same old chat). `advanceCurrentStep` is the only thing that
+        // ever touches Conversation's own row (and so its `@updatedAt`) — it only fires when the
+        // customer actually answers something and moves to a new step, never on a bare resume
+        // render like this one — so it's a true "last real activity" timestamp, not "last time the
+        // tab was open". Past RESUME_IDLE_MS since that, treat it exactly like an explicit "Start
+        // over": forget the stale pointer and fall through to the normal fresh-session path below,
+        // rather than resuming a chat the customer has effectively walked away from.
+        const conversationRow = await prisma.conversation.findUnique({
+          where: { id: existingState.conversationId },
+          select: { updatedAt: true },
+        });
+        const idleMs = conversationRow ? Date.now() - conversationRow.updatedAt.getTime() : Infinity;
+        if (idleMs > RESUME_IDLE_MS) {
+          await forgetProductSession(mobileForProfile, productForProfile);
+        } else {
+          // Exact resume — same conversation, wherever it was left, not a fresh start. Still only
+          // shows the CURRENT step, not a full transcript replay (deliberate — see this block's own
+          // history). But a cold resume (no local chat history on the client — e.g. switching into a
+          // product for the first time this page load, or after a reload) landing well past the
+          // identity recap left the customer looking at a bare question with zero context: "how much
+          // loan amount do you need?" with no idea whose numbers that even is (reported 2026-11-13 —
+          // looked like Personal Loan "skipped" the customer-details card Gold Loan/LAS seemed to
+          // show, though those only looked fine because the browser's own in-tab cache still had
+          // their earlier messages — this reconnects regardless of that). Re-showing the "here's what
+          // we have on file" recap every time a known customer's session is cold-resumed past it
+          // fixes that — never shown twice in the SAME request (profileFound's own render already
+          // includes it once there), so this only ever fires on a step strictly after it.
+          const existingCtx = toCtx(existingState, ip, userAgent);
+          const response = await render(existingState.currentStepId, existingState.sessionToken, existingCtx);
+          if (existingCtx.answers.dedupeFound === true && existingState.currentStepId !== 'profileFound') {
+            // Own field, not merged into botMessage (2026-11-13 instruction) — the widget renders
+            // this as its own separate bot bubble, above the current question's.
+            response.recapMessage = renderFoundProfileSummary(existingCtx);
+          }
+          return response;
+        }
+      }
+    }
+  }
+
+  if (!forceNew && mobileForProfile) {
+    const profile = await recallProfile(mobileForProfile);
+    if (profile) {
+      // Fill gaps only — never clobber something identityToken/launchToken already set more
+      // authoritatively for THIS brand-new session.
+      if (profile.finfinityAccessToken && !ctxAnswers.finfinityAccessToken) ctxAnswers.finfinityAccessToken = profile.finfinityAccessToken;
+      if (profile.finfinityRefreshToken && !ctxAnswers.finfinityRefreshToken) ctxAnswers.finfinityRefreshToken = profile.finfinityRefreshToken;
+      if (profile.remoteCustomerId !== undefined && ctxAnswers.remoteCustomerId === undefined) ctxAnswers.remoteCustomerId = profile.remoteCustomerId;
+      if (profile.creditScore !== undefined && ctxAnswers.creditScore === undefined) ctxAnswers.creditScore = profile.creditScore;
+      if (profile.bureauSource && !ctxAnswers.bureauSource) ctxAnswers.bureauSource = profile.bureauSource;
+      if (profile.pincode && !ctxAnswers.pincode) ctxAnswers.pincode = profile.pincode;
+      if (profile.income !== undefined && ctxAnswers.income === undefined) ctxAnswers.income = profile.income;
+      // Personal Loan reads its own separate `plIncome` key (see personalLoan.ts) rather than the
+      // shared `income` field Home Loan/LAP use — both get pre-seeded from the same cached value
+      // so income given on EITHER side skips the question on the other.
+      if (profile.income !== undefined && ctxAnswers.plIncome === undefined) ctxAnswers.plIncome = profile.income;
+      if (profile.pan && !ctxAnswers.pan) ctxAnswers.pan = profile.pan;
+      if (profile.fullName && !ctxAnswers.fullName) {
+        ctxAnswers.fullName = profile.fullName;
+        ctxAnswers.name = profile.fullName;
+      }
+      if (profile.dob && !ctxAnswers.dob) ctxAnswers.dob = profile.dob;
+      if (profile.gender && !ctxAnswers.gender) ctxAnswers.gender = profile.gender;
+      if (profile.panDuplicateChecked) ctxAnswers.panDuplicateChecked = true;
+    }
+  }
+
+  // 2026-11-12 instruction: "if the customer is logged in from cis side then also u dont ask any
+  // details" — `verified: true` + a mobile number is what unlocks this; a prefilled mobile with no
+  // verification claim still goes through OTP normally. Only hit the real client-token endpoint
+  // when nothing's already cached above (cheaper, and avoids a pointless network call on a UAT box
+  // where this endpoint doesn't even exist).
+  //
+  // Known gap, not yet resolved: this only works cleanly for a customer dedupeCheck FINDS
+  // (searchcustomer returns a real remoteCustomerId). For a customer dedupeCheck does NOT find,
+  // today's code only ever learns a new remoteCustomerId as a side effect of validateotpv2 (the OTP
+  // step we're skipping here) — there's no other call site in this flow that creates one. Flagged,
+  // not fixed — needs Bitsflow's input before relying on it for a genuinely new customer.
+  if (prefillVerified && mobileForProfile && !ctxAnswers.finfinityAccessToken) {
+    const clientToken = await fetchClientToken();
+    if (clientToken) {
+      ctxAnswers.finfinityAccessToken = clientToken;
+    } else {
+      logger.warn({ event: 'launch_token_verified_no_client_token' }, 'launch token claimed verified but no client token is configured/available — falling back to the normal OTP flow');
     }
   }
 
   const firstId = applicablePath(FLOW, { answers: ctxAnswers, conversationId: '', meta: { ip } })[0].id;
   const state = await createSession(FLOW.id, firstId, { answers: ctxAnswers, mobileHash, mobileMasked, panConsent: mobileHash ? true : undefined });
+  if (mobileForProfile && productForProfile) {
+    void rememberProductSession(mobileForProfile, productForProfile, state.conversationId, state.sessionToken);
+  }
   if (mobileHash) {
     // Same compliance trail the 'mobile' step's own onAnswer would have written — skipped here
     // since that step itself never runs for a resumed identity. Marked source: 'identity_resume'
@@ -226,6 +350,7 @@ async function maybeSendRmSummaryEmail(
  * call site that might render the 'result' step goes through this so the payload is never forgotten. */
 async function render(stepId: string, sessionToken: string, ctx: StepContext, errorText?: string): Promise<ChatTurnResponse> {
   const response = renderStep(FLOW, stepId, sessionToken, ctx, errorText);
+  response.product = ctx.answers.product as string | undefined;
   // Checked by step TYPE (not the literal id "result") so every product's own terminal step — each
   // has its own unique id, e.g. 'plResult'/'glResult'/'blResult' (see flows/personalLoan.ts etc.) —
   // gets the same treatment as homeLoan.ts's 'result' step, without homeLoan.ts needing to know
@@ -413,7 +538,7 @@ export async function chatRoutes(app: FastifyInstance) {
 
     // --- Brand new session ---
     if (!body.sessionToken) {
-      return reply.send(await beginNewSession(ip, userAgent, body.identityToken, body.launchToken));
+      return reply.send(await beginNewSession(ip, userAgent, body.identityToken, body.launchToken, body.forceNew));
     }
 
     const state = await loadSession(body.sessionToken);
@@ -436,7 +561,7 @@ export async function chatRoutes(app: FastifyInstance) {
     // screen wants a fresh conversation, not to have that phrase validated as an actual answer to
     // the current step (which would usually just show a validation error and confuse them).
     if (typeof body.value === 'string' && RESTART_PATTERN.test(body.value.trim())) {
-      return reply.send(await beginNewSession(ip, userAgent, body.identityToken, body.launchToken));
+      return reply.send(await beginNewSession(ip, userAgent, body.identityToken, body.launchToken, true));
     }
 
     const inputSpec = currentStep.input(ctx);

@@ -1275,7 +1275,7 @@
 /* .lc-badge/.lc-badge-muted/.lc-not-eligible had zero CSS anywhere (same gap as .lc-gold-submit-*
    and .lc-ghost-btn found earlier today) — used by the lead-only result card (LAS/Business Loan)
    and Gold Loan's not-eligible state. Matches the .la-tag pill treatment already established. */
-.lc-badge{display:inline-flex;align-items:center;gap:6px;font:500 11px var(--sans);padding:6px 12px;border-radius:100px;background:var(--la-soft);color:var(--la-gold);margin-bottom:14px}
+.lc-badge{display:inline-flex;align-items:center;gap:6px;font:500 11px var(--sans);padding:6px 12px;border-radius:100px;background:var(--la-soft);color:var(--la-gold);margin-bottom:14px;white-space:nowrap}
 .lc-badge-muted{background:var(--la-line);color:var(--la-muted)}
 .lc-not-eligible{border:1px solid var(--la-line);border-radius:10px;background:var(--la-card);padding:16px 18px;margin-bottom:14px}
 /* .lc-min-bar/.lc-result-pill (the not-eligible result card's minimize button and its collapsed
