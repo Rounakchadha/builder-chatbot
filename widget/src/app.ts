@@ -174,6 +174,16 @@ export class ChatWidget {
    * one entry per product actually visited; never cleared out (a handful of products, not a memory
    * concern for a single widget instance's lifetime). */
   private lastRenderedStepBySession: Map<string, string> = new Map();
+  /** Catches a duplicate that lastRenderedStepBySession above can't: a BRAND NEW sessionToken
+   * showing the exact same step+message as the product's own immediately-previous turn (2026-11-14
+   * — reported the same first question piling up 2-3x on reopening a product). Before mobile is
+   * known there's nothing to resume by (profile.service.ts is mobile-keyed), so every restart of an
+   * anonymous, not-yet-identified visit necessarily mints a genuinely new session/token — but if
+   * nothing about the product actually changed (switchProductLog didn't restore/stash anything,
+   * i.e. we're still looking at that same product's live log) and the content is identical to what's
+   * already the last thing shown there, it's the same repeat-render case lastRenderedStepBySession
+   * exists to catch, just reached via a different session each time instead of the same one. */
+  private lastRenderedSignatureByProduct: Map<string, string> = new Map();
   /** Set by restart()'s plain (non-keepChatLog) path — the explicit "Start over" button/confirm
    * dialog — and read/cleared by the very next start() call. Tells the server this is a genuine,
    * deliberate restart (see shared's ChatMessageRequest.forceNew), not just the first open() of a
@@ -221,6 +231,10 @@ export class ChatWidget {
    * launchToken.service.ts), never persisted to localStorage like STORAGE_KEY/IDENTITY_STORAGE_KEY
    * above, since it's single-use and tied to this one open() call, not something to resume later. */
   private launchToken: string | null = null;
+  /** The last launchToken open() actually acted on (restarted or did the very first start() for) —
+   * see open()'s own doc comment (2026-11-14): a REPEAT of this exact value means nothing about the
+   * customer's identity/product has changed since, so there's nothing to restart for. */
+  private lastAppliedLaunchToken: string | null = null;
   private errorReporter: ErrorReporter;
 
   private panelEl!: HTMLDivElement;
@@ -571,9 +585,24 @@ export class ChatWidget {
     // own per-product session lookup (profile.service.ts/chat.ts) reliably resolves resume-vs-fresh
     // from the token's own decrypted mobile+product, which is far more trustworthy than anything
     // this widget can infer about its own in-memory state across reloads/re-clicks.
+    //
+    // Bug fixed 2026-11-14 (reported: reopening the same product piled up the same first question
+    // 2-3 times, with a "Switching…" bubble on top) — "always authoritative" above was about a
+    // DIFFERENT token ever being ignored, not about the host calling open() more than once with the
+    // EXACT SAME token for whatever's already on screen (a re-render, a second click handler, etc).
+    // Before mobile is known, every restart necessarily starts a genuinely new server-side session
+    // (there's nothing to resume by yet — see profile.service.ts, keyed on mobile), and this product
+    // hasn't actually changed, so switchProductLog's own "no-op unless the product changed" check
+    // never clears the log either — the two gaps together let every repeat pile up a fresh copy of
+    // the same first question. A literal repeat of the last token actually applied changes nothing
+    // about who the customer is, so there's nothing to restart for.
     if (launchToken) {
+      const isRepeatOfLastApplied = this.started && launchToken === this.lastAppliedLaunchToken;
       this.launchToken = launchToken;
-      if (this.started) {
+      this.lastAppliedLaunchToken = launchToken;
+      if (isRepeatOfLastApplied) {
+        // Already showing exactly this — just bring the panel up, nothing to restart.
+      } else if (this.started) {
         this.restart({ keepChatLog: true });
       } else {
         // First open() this page load — still must never blindly resume a stale sessionToken left
@@ -908,7 +937,7 @@ export class ChatWidget {
   private async renderTurn(resp: ChatTurnResponse) {
     this.productSwitchLoadingEl?.remove();
     this.productSwitchLoadingEl = null;
-    this.switchProductLog(resp.product);
+    const stashRestored = this.switchProductLog(resp.product);
     this.updateProgress(resp);
 
     // Present once mobile+OTP is freshly verified — stored so a future brand-new session (a
@@ -923,7 +952,15 @@ export class ChatWidget {
     // apiFetch/message still auto-continuing toward something not shown yet) needs to fall through
     // to the normal path — a repeat of a FINISHED result is also caught here even though it's
     // "none"-type too.
-    const isRepeat = !resp.errorText && this.lastRenderedStepBySession.get(resp.sessionToken) === resp.stepId;
+    const productSignatureKey = resp.product ? `product:${resp.product}` : undefined;
+    const thisSignature = `${resp.stepId}::${resp.botMessage ?? ''}`;
+    const isDuplicateFreshSession =
+      !resp.errorText &&
+      !stashRestored &&
+      productSignatureKey !== undefined &&
+      this.lastRenderedSignatureByProduct.get(productSignatureKey) === thisSignature;
+    const isRepeat =
+      (!resp.errorText && this.lastRenderedStepBySession.get(resp.sessionToken) === resp.stepId) || isDuplicateFreshSession;
     const isRepeatResult = isRepeat && resp.done && Boolean(resp.result);
     if (isRepeat && (resp.input.type !== 'none' || isRepeatResult)) {
       if (resp.input.type === 'choice') {
@@ -947,6 +984,7 @@ export class ChatWidget {
       return;
     }
     this.lastRenderedStepBySession.set(resp.sessionToken, resp.stepId);
+    if (productSignatureKey !== undefined) this.lastRenderedSignatureByProduct.set(productSignatureKey, thisSignature);
 
     if (resp.errorText) {
       // The submission was rejected — discard any deferred bubble for it (a wrong OTP never gets
