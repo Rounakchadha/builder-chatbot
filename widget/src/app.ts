@@ -153,6 +153,11 @@ export class ChatWidget {
   /** Set by restart()'s keepChatLog path, removed the moment a real response (success or error)
    * actually arrives — see restart()'s own comment for why this exists. */
   private productSwitchLoadingEl: HTMLElement | null = null;
+  /** True from the moment restart() pre-stashes the outgoing product's log (see its own 2026-11-16
+   * fix) until switchProductLog consumes it on the switch's actual response — tells
+   * switchProductLog not to stash AGAIN (there's nothing left to stash; it would overwrite the
+   * real one with an empty array). */
+  private pendingSwitchStashed = false;
   /** Which product the chat log currently on screen belongs to (from the last response's own
    * `product` field) — compared against each new response in renderTurn to detect an actual
    * product switch (not just "a different question"). Undefined until the first response with a
@@ -758,16 +763,29 @@ export class ChatWidget {
    * was already looking at when they left, so the caller must not also append this turn's
    * botMessage/composer on top of it (that was the duplicated-question bug reported 2026-11-13 —
    * "What's your gender?" piling up, once per switch-away-and-back). */
+  /** The actual stashing half of switchProductLog, pulled out so restart() can call it immediately
+   * on click (see its own 2026-11-16 fix) instead of waiting for the switch's response to arrive. */
+  private stashCurrentLog(): void {
+    if (!this.currentProduct) return;
+    const toStash = Array.from(this.chatLogEl.childNodes).filter((n) => !(n instanceof HTMLElement && n.classList.contains('la-chat-spacer')));
+    toStash.forEach((n) => n.remove());
+    this.chatLogsByProduct.set(this.currentProduct, toStash);
+  }
+
   private switchProductLog(newProduct: string | undefined): boolean {
     if (!newProduct || newProduct === this.currentProduct) {
       if (newProduct) this.currentProduct = newProduct;
       return false;
     }
-    if (this.currentProduct) {
-      const toStash = Array.from(this.chatLogEl.childNodes).filter((n) => !(n instanceof HTMLElement && n.classList.contains('la-chat-spacer')));
-      toStash.forEach((n) => n.remove());
-      this.chatLogsByProduct.set(this.currentProduct, toStash);
-    }
+    // Bug fixed 2026-11-16 (reported: switching products showed the OLD product's messages/choice
+    // buttons for a second or two before "Switching…" even appeared, then another second or two of
+    // that stale content sitting there during the real network wait) — restart() now stashes the
+    // outgoing product's content and clears the visible log the INSTANT a switch starts (see its
+    // own `pendingSwitchStashed`), rather than this function doing it only once the switch's
+    // response finally arrives. Skip redoing it here — there's nothing left in chatLogEl to stash
+    // (it would just overwrite the real stash restart() already made with an empty one).
+    if (this.currentProduct && !this.pendingSwitchStashed) this.stashCurrentLog();
+    this.pendingSwitchStashed = false;
     const restored = this.chatLogsByProduct.get(newProduct);
     if (restored) {
       restored.forEach((n) => this.chatLogEl.appendChild(n));
@@ -2130,6 +2148,17 @@ export class ChatWidget {
       // productSwitchLoadingEl currently points at, never any earlier one left behind. Removing any
       // stale one first means there's only ever at most one in the log at a time.
       this.productSwitchLoadingEl?.remove();
+      // Bug fixed 2026-11-16 (reported: the outgoing product's own messages/choice buttons stayed
+      // fully visible for a second or two before "Switching…" even showed up, then sat there for
+      // the whole real network wait after that) — stash it away and clear the visible log to just
+      // the spacer RIGHT NOW, not whenever the switch's response eventually comes back (that's what
+      // switchProductLog, called from renderTurn, used to wait for). Guarded by
+      // pendingSwitchStashed so a second restart() firing before the first's response lands (the
+      // 2026-11-14 double-switch race) doesn't stash an already-emptied log on top of the real one.
+      if (!this.pendingSwitchStashed) {
+        this.stashCurrentLog();
+        this.pendingSwitchStashed = true;
+      }
       this.clearComposer();
       const row = document.createElement('div');
       row.className = 'la-message';
