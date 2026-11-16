@@ -149,6 +149,19 @@ model Lead {
   // syncLeadFinancials (see that function), null until the first successful sync.
   lastSyncedFinancialsJson String?
 
+  // Added 2026-11-13 (bug fix): the real RM Finfinity assigns comes back ONLY in create_anacity_lead's
+  // own response (see LeadSyncResult.rm's doc comment) — nothing here ever stored it, so every reuse
+  // path below (both "same conversation" and "same customer+product, different conversation") had no
+  // way to return it, and the customer saw a generic "Our team"/blank-contact placeholder instead of
+  // their real, already-assigned RM every time a lead was reused (confirmed live via Gold Loan,
+  // 2026-11-13 — reported as "RM isn't being assigned", though the gap applies to every product).
+  // User's own instruction: a returning customer should see their SAME original RM, not a placeholder
+  // and not a freshly reassigned one. Nullable — a lead created before this migration existed simply
+  // has none to show, same graceful "Our team" fallback as today.
+  rmName  String?
+  rmPhone String?
+  rmEmail String?
+
   // Security-review finding, 2026-10-23: listApplications (routes/chat.ts) and ensureLead's own
   // P2002-recovery lookup both query by builderLeadId-adjacent patterns and by this id directly in
   // status lookups — no index meant a full table scan as Lead rows grow.

@@ -28,13 +28,11 @@ export interface LeadSyncResult {
    * create_anacity_lead's own response. Only ever set by the real service; the mock leaves this
    * undefined so the flow's placeholder RM (see flows/rm.ts's pickRm) still applies there. */
   rm?: { name: string; phone: string; email: string };
-  /** True when this call found and reused an existing lead instead of creating a new one — see
-   * ensureLeadOnce. updateLead/updateCustomer appear to trigger Finfinity's own lead notification
-   * every time they run — confirmed 2026-10-31 by 5 "Start over" conversations for the same
-   * returning customer correctly reusing the same real builderLeadId (lead creation itself was NOT
-   * duplicated), yet the email spam to Sparsh continued anyway. Callers should still sync on a
-   * reused lead when the financials actually changed (see lastSyncedFinancialsJson below) — only a
-   * byte-for-byte-identical revisit should skip it entirely. */
+  /** True only for a genuine double-submit of the SAME conversation (a retried request after a
+   * network blip, a double click) — see ensureLeadOnce's own comment. Removed 2026-11-16 (explicit
+   * instruction): this used to also cover reusing a prior lead for the same real customer+product
+   * across DIFFERENT conversations, so a repeat visit never created a new real lead or notified
+   * CIS again — every repeat run now creates its own genuinely new lead instead. */
   reused?: boolean;
   /** Whatever was last successfully synced onto this lead (see Lead.lastSyncedFinancialsJson's own
    * comment in schema.prisma) — undefined on a genuinely new lead (nothing synced yet), so callers
@@ -238,22 +236,24 @@ export interface EnsureLeadInput extends LeadProfile {
  * Business Loan has its own parallel version in businessLoan.service.ts, same idea) should go
  * through to create a real lead, instead of calling leadService.createLead() directly.
  *
- * Bug fixed 2026-10-31: every flow's own create-lead step only ever checked "does a Lead already
- * exist for THIS conversation" (Lead.conversationId is unique) — correct for stopping a double-
- * click/retry within one session, but it does nothing for a RETURNING real customer: "Start over",
- * a reload, or just reopening the widget starts a brand-new Conversation row, which has never seen
- * a Lead before, so every flow called create_anacity_lead again — a second real lead, a second real
- * RM assignment, and a second email to Sparsh, for a person who already has one. User's own words:
- * "ek bande ki ek bank ki ek product ki ek hi lead honi chaiye" (one lead per person per product).
- *
- * Fix: also check for a prior Lead belonging to the SAME real customer (remoteCustomerId — the
- * Finfinity backend's own customer_id, stable across every conversation for the same person, unlike
- * the local mock-only Customer.id) for the SAME product (every product shares one Conversation.
- * flowId, so flowId alone can't distinguish them — see Lead.product in schema.prisma). If one's
- * found, reuse its builderLeadId instead of calling the real API again, while still recording a
- * local Lead row for THIS conversation (status-check/profile-sync code looks leads up by
- * conversationId, so this new conversation needs its own row pointing at the same real lead).
+ * Only ever skips creating a real lead for a genuine double-submit of THIS SAME conversation (a
+ * retried request after a network blip, a double click) — see step 1 below. Removed 2026-11-16
+ * (explicit instruction): this used to ALSO check for a prior lead belonging to the same real
+ * customer+product from a DIFFERENT conversation and reuse it instead — so a "Start over," a
+ * reload, or reopening the same product never created a second real lead or notified CIS again for
+ * a returning customer. Every repeat run now creates its own genuinely new real lead and fires
+ * CIS's webhook for it, same as any other new lead — "one lead per person per product" is no
+ * longer enforced here.
  */
+/** Reconstructs the RM shape LeadSyncResult.rm expects from a stored Lead row's rmName/rmPhone/
+ * rmEmail — undefined (not a partially-empty object) unless all three are present, so callers'
+ * existing `lead?.rm ?? { name: 'Our team', ... }` fallback keeps working unchanged for any lead
+ * created before this migration existed. */
+function rmFromRow(row: { rmName: string | null; rmPhone: string | null; rmEmail: string | null }): LeadSyncResult['rm'] {
+  if (!row.rmName || !row.rmPhone || !row.rmEmail) return undefined;
+  return { name: row.rmName, phone: row.rmPhone, email: row.rmEmail };
+}
+
 export async function ensureLeadOnce(input: EnsureLeadInput): Promise<LeadSyncResult> {
   // 1. Already created for THIS exact conversation? (same guard homeLoan.ts's old ensureLead had —
   // a double-click or a retried request after a network blip shouldn't create a second real lead.)
@@ -263,11 +263,12 @@ export async function ensureLeadOnce(input: EnsureLeadInput): Promise<LeadSyncRe
       builderLeadId: existingHere.builderLeadId,
       status: existingHere.builderSyncStatus as LeadSyncResult['status'],
       reused: true,
+      rm: rmFromRow(existingHere),
       lastSyncedFinancialsJson: existingHere.lastSyncedFinancialsJson,
     };
   }
 
-  const leadRowData = (builderLeadId: string | null, builderSyncStatus: LeadSyncResult['status']): Prisma.LeadUncheckedCreateInput => ({
+  const leadRowData = (builderLeadId: string | null, builderSyncStatus: LeadSyncResult['status'], rm?: LeadSyncResult['rm']): Prisma.LeadUncheckedCreateInput => ({
     conversationId: input.conversationId,
     remoteCustomerId: input.remoteCustomerId ?? null,
     product: input.product,
@@ -277,39 +278,26 @@ export async function ensureLeadOnce(input: EnsureLeadInput): Promise<LeadSyncRe
     creditScore: input.creditScore ?? null,
     builderLeadId,
     builderSyncStatus,
+    rmName: rm?.name ?? null,
+    rmPhone: rm?.phone ?? null,
+    rmEmail: rm?.email ?? null,
   });
 
-  // 2. A prior lead for the SAME real customer + product, from a DIFFERENT conversation? Only
-  // meaningful once we have a real remoteCustomerId (mock mode has none — no cross-session identity
-  // to dedupe against there, which is fine, mock mode was never the real duplicate-email problem).
-  if (input.remoteCustomerId !== undefined) {
-    const prior = await prisma.lead.findFirst({
-      where: { remoteCustomerId: input.remoteCustomerId, product: input.product, builderLeadId: { not: null } },
-      orderBy: { createdAt: 'desc' },
-    });
-    if (prior?.builderLeadId) {
-      try {
-        await prisma.lead.create({ data: leadRowData(prior.builderLeadId, 'synced') });
-      } catch (err) {
-        if (!(err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002')) throw err;
-      }
-      logger.info(
-        { event: 'lead_reused_existing', conversationId: input.conversationId, remoteCustomerId: input.remoteCustomerId, product: input.product, builderLeadId: prior.builderLeadId },
-        'reusing an already-created real lead for this customer+product instead of creating a duplicate',
-      );
-      return { builderLeadId: prior.builderLeadId, status: 'synced', reused: true, lastSyncedFinancialsJson: prior.lastSyncedFinancialsJson };
-    }
-  }
-
-  // 3. Genuinely new — create for real, same race-recovery as before (P2002 = a true concurrent
+  // 2. Genuinely new — create for real, same race-recovery as before (P2002 = a true concurrent
   // second request for this same conversation won the insert a moment ago).
+  //
+  // Removed 2026-11-16 (explicit instruction): this used to check for a prior lead for the SAME
+  // real customer + product from a DIFFERENT conversation and reuse it instead of creating a new
+  // one — every repeat run of the same customer+product now gets its own genuinely new real lead,
+  // and CIS's webhook fires for it too, same as any other new lead. Only the SAME-conversation guard
+  // above (a double click/retry within one conversation) still skips creating a second lead.
   const result = await leadService.createLead(input);
   try {
-    await prisma.lead.create({ data: leadRowData(result.builderLeadId, result.status) });
+    await prisma.lead.create({ data: leadRowData(result.builderLeadId, result.status, result.rm) });
   } catch (err) {
     if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
       const winner = await prisma.lead.findUnique({ where: { conversationId: input.conversationId } });
-      return { builderLeadId: winner?.builderLeadId ?? result.builderLeadId, status: 'synced', rm: result.rm, lastSyncedFinancialsJson: winner?.lastSyncedFinancialsJson };
+      return { builderLeadId: winner?.builderLeadId ?? result.builderLeadId, status: 'synced', rm: winner ? rmFromRow(winner) : result.rm, lastSyncedFinancialsJson: winner?.lastSyncedFinancialsJson };
     }
     throw err;
   }

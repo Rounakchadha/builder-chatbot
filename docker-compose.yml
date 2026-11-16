@@ -31,6 +31,32 @@ services:
       timeout: 5s
       retries: 10
 
+  # Standalone Home Loan eligibility pre-check (21 real lenders) — see
+  # hl-eligibility-precheck/README.md. Only reachable from inside this compose network (no `ports:`
+  # published to the host) — the `server` service below reaches it by this service name, same as
+  # postgres/redis above. Bug fixed 2026-11-16: server/.env's own HL_ELIGIBILITY_SERVICE_URL used
+  # to say `http://localhost:8096`, which from INSIDE the server container's own network namespace
+  # means the container's own loopback, not this host — nothing was ever listening there, hence the
+  # ECONNREFUSED every single request. Fixed below by overriding that env var to this service's
+  # Docker DNS name instead (same override pattern already used for DATABASE_URL/REDIS_URL below —
+  # docker compose's `environment:` always wins over `env_file` for the same key).
+  hl-eligibility:
+    build:
+      context: ./hl-eligibility-precheck
+      dockerfile: Dockerfile
+    environment:
+      PORT: '8096'
+      # From the project-root .env file (gitignored, read automatically by `docker compose`) — never
+      # a literal value here, which would otherwise commit a real shared secret to git in plaintext.
+      INTERNAL_API_KEY: ${HL_ELIGIBILITY_INTERNAL_KEY}
+    healthcheck:
+      test: ['CMD', 'node', '-e', "fetch('http://localhost:8096/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
   server:
     build:
       context: .
@@ -41,6 +67,8 @@ services:
       DATABASE_URL: postgresql://loanbot:loanbot@postgres:5432/loanbot_v1
       REDIS_URL: redis://redis:6379
       PORT: '8080'
+      HL_ELIGIBILITY_SERVICE_URL: http://hl-eligibility:8096
+      HL_ELIGIBILITY_API_KEY: ${HL_ELIGIBILITY_INTERNAL_KEY}
       # The UAT branch's docker-compose.yml disables TLS certificate verification here as a
       # workaround for a proxy on that server's own network path — deliberately NOT carried onto
       # this prod branch (real customer PII flows through here; if prod's network path has the same
@@ -59,6 +87,8 @@ services:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      hl-eligibility:
         condition: service_healthy
     # Security-review finding, 2026-10-23: unlike postgres/redis above, this service had neither a
     # healthcheck nor a restart policy — if the process crashed, nothing brought it back, and

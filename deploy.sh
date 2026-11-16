@@ -15,6 +15,18 @@ COMPOSE_PROJECT="builder-chatbot"
 SSH_KEY="$HOME/.ssh/id_ed25519_finfinity"
 LOCAL_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/"
 
+# Bug fixed 2026-11-16: this script only ever rebuilt the SERVER's docker image (below) — a source
+# edit to widget/src/*.ts alone never got compiled, so the rsync below just shipped whatever stale
+# bytes were already sitting in test-page/widget.js, silently deploying old client code under a
+# "deploy succeeded" message (hit for real, 2026-11-13/14: two widget fixes landed on UAT with zero
+# effect since the live widget.js still had neither of them). Building here, before the copy/rsync,
+# makes that impossible going forward. widget-finfinity is deliberately excluded — it's a separate,
+# intentionally-behind design variant (see test-page's own widget-finfinity.js) that only gets
+# ported over on request, not something this script should silently keep in sync.
+echo "==> Building the widget from source..."
+(cd "$LOCAL_PATH/widget" && npm run build)
+cp "$LOCAL_PATH/widget/dist/widget.js" "$LOCAL_PATH/test-page/widget.js"
+
 echo "==> Copying files to the server..."
 # These never leave this Mac, regardless of what .gitignore says — rsync copies whatever's on
 # disk, git-ignored or not, so a real test customer's data (cibil_profile.txt) and local junk
@@ -34,6 +46,7 @@ rsync -rlvz --delete \
   --exclude '*.xlsx' \
   --exclude 'dump.rdb' \
   --exclude '.claude' \
+  --exclude 'server/.env.prod' \
   -e "ssh -i $SSH_KEY" \
   "$LOCAL_PATH" "$SERVER_USER@$SERVER_HOST:$SERVER_PATH/"
 
@@ -51,7 +64,7 @@ echo "==> Pointing the test page at the public API before building..."
 ssh -i "$SSH_KEY" "$SERVER_USER@$SERVER_HOST" "cd $SERVER_PATH/test-page && sed -i -E 's#data-api-base=\"http://[^\"]+\"#data-api-base=\"$PUBLIC_API_BASE\"#' index.html sdk-demo.html embed.html"
 
 echo "==> Building the new image on the server (not yet live)..."
-ssh -i "$SSH_KEY" "$SERVER_USER@$SERVER_HOST" "cd $SERVER_PATH && docker compose -p $COMPOSE_PROJECT build server"
+ssh -i "$SSH_KEY" "$SERVER_USER@$SERVER_HOST" "cd $SERVER_PATH && docker compose -p $COMPOSE_PROJECT build server hl-eligibility"
 
 # Security-review finding, 2026-10-23: this used to restart the server with the NEW code first, and
 # only run migrations after — a real window where new code (expecting the new schema) ran against

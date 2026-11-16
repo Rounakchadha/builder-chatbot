@@ -67,15 +67,10 @@ const EnvSchema = z.object({
   FINFINITY_LEAD_ENDPOINT: z.string().optional().default('/leadflow/create_anacity_lead'),
   FINFINITY_CAMPAIGN_CODE: z.string().optional().default('anacity'),
 
-  // Prod-only "client token" step (2026-10-31 notes from Bitsflow): a new POST /client-token/ call,
-  // no OTP involved, done once at the very start of the flow, returning a token used the same way
-  // the OTP-derived access token is used everywhere else today (see finfinityClient.ts's doc
-  // comment). Two client_id/client_secret pairs were handed over with no confirmation of which is
-  // which — left as a single configurable pair here rather than guessing; confirm with Bitsflow
-  // before setting these on the real prod server. Unset = this step is skipped entirely (safe
-  // no-op, same convention as every other FINFINITY_* toggle in this file) — see
-  // services/clientToken.service.ts, which is NOT yet wired into any flow's auth (see that file's
-  // own doc comment for why).
+  // Prod-only "no OTP needed" client-level token — see clientToken.service.ts's own doc comment.
+  // Blank by default (UAT-safe no-op); confirmed live 2026-11-12 which of the two credential pairs
+  // Bitsflow gave actually works on prod. PAN lookup (getpandetail) also authenticates via this
+  // same secret on prod, not an OTP-derived token (confirmed 2026-11-16).
   FINFINITY_CLIENT_TOKEN_URL: z.string().optional().default('/client-token/'),
   FINFINITY_CLIENT_ID: z.string().optional().default(''),
   FINFINITY_CLIENT_SECRET: z.string().optional().default(''),

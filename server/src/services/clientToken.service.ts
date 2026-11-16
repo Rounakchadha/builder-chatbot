@@ -3,30 +3,27 @@ import { env } from '../config/env';
 
 /** Prod-only step (2026-10-31 notes from Bitsflow): "yeh api starting me call hogi ispe token
  * aayega... without otp hai yeh" — a client_id/client_secret call at the very start of the flow
- * that returns a token, no OTP involved. On UAT this doesn't exist at all; every access token
- * today comes from validateotpv2/validatebureau instead (see finfinityClient.ts's own doc comment).
+ * that returns a token, no OTP involved. Confirmed LIVE against real prod 2026-11-12 (both the
+ * endpoint and the exact two credential pairs Bitsflow gave) — UAT has no such endpoint at all
+ * ("ClientModel matching query does not exist"), so this safely no-ops back to normal OTP there
+ * regardless of configuration (see fetchClientToken's own `!res.ok` branch below).
  *
- * Wired in (2026-11-11) for exactly one case: routes/chat.ts's beginNewSession calls this when an
- * SDK launch token claims `verified: true` — CIS is vouching that this customer is already
+ * Wired in for exactly one case: routes/chat.ts's beginNewSession calls this when an SDK launch
+ * token claims `verified: true` and no cached finfinityAccessToken is already available for this
+ * mobile (see profile.service.ts) — CIS is vouching that this customer is already
  * identity-checked on their end, so we skip our own OTP and use this token to authorize the
  * dedupeCheck/searchcustomer call instead (same mechanism identityToken-resumed sessions already
  * use — see that file's own comment). An unverified or absent launch token is completely
  * unaffected — OTP runs exactly as it does today.
  *
- * Still unconfirmed, flagged rather than guessed at:
- *   1. The real request/response shape of POST /client-token/ was never confirmed with Bitsflow —
- *      the shape below is a best guess (client_id/client_secret in, an access token out), not a
- *      verified contract. Same discipline as RealBureauApi.fetchBureauData's own unconfirmed
- *      response shape (see that file).
- *   2. Only one client_id/client_secret pair is configured (FINFINITY_CLIENT_ID/_SECRET below) —
- *      we were given two with no confirmation of which is which; use whichever Bitsflow confirms.
- *   3. Known gap: this only works for a customer dedupeCheck FINDS. A customer it does NOT find
- *      has no other way in this flow to get a remoteCustomerId once OTP is skipped — see
- *      routes/chat.ts's own comment at the call site. */
+ * Known gap, not yet resolved: this only works cleanly for a customer dedupeCheck FINDS. A
+ * customer it does NOT find has no other way in this flow to get a remoteCustomerId once OTP is
+ * skipped — see routes/chat.ts's own comment at the call site. */
 
 interface ClientTokenResponse {
-  access_token: string;
-  refresh_token?: string;
+  data: Array<{ access: string; refresh?: string }>;
+  error_msg: string;
+  error_code: string;
 }
 
 export async function fetchClientToken(): Promise<string | null> {
@@ -42,18 +39,16 @@ export async function fetchClientToken(): Promise<string | null> {
       }),
       signal: AbortSignal.timeout(10_000),
     });
-    if (!res.ok) {
-      logger.error({ event: 'client_token_http_error', httpStatus: res.status }, 'client-token call returned a non-2xx status');
-      return null;
-    }
     const body = (await res.json()) as ClientTokenResponse;
-    if (!body.access_token) {
-      logger.error({ event: 'client_token_unexpected_shape' }, 'client-token response had no access_token — confirmed-shape assumption may be wrong');
+    // Confirmed live shape (2026-11-12): {"data": [{"access": "...", "refresh": "..."}], "error_msg": "", "error_code": ""}.
+    const access = body.data?.[0]?.access;
+    if (!res.ok || !access) {
+      logger.error({ event: 'client_token_failed', httpStatus: res.status, errorMsg: body.error_msg }, 'client-token call did not return a usable access token');
       return null;
     }
-    return body.access_token;
+    return access;
   } catch (err) {
-    logger.error({ err, event: 'client_token_failed' }, 'client-token call failed');
+    logger.error({ err, event: 'client_token_error' }, 'client-token call threw');
     return null;
   }
 }

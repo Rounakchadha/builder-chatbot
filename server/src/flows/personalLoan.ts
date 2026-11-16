@@ -11,6 +11,7 @@ import { pickRm } from './rm';
 import { ensureLeadOnce, type LeadSyncResult } from '../services/lead.service';
 import { sendLeadCreatedWebhook } from '../services/webhook.service';
 import { maskPan } from '../lib/crypto';
+import { rememberProfile } from '../services/profile.service';
 import { prisma } from '../lib/prisma';
 import { Prisma } from '@prisma/client';
 import { logger } from '../lib/logger';
@@ -295,7 +296,10 @@ export const personalLoanSteps: StepDefinition[] = [
     id: 'plIncome',
     type: 'number',
     progressLabel: 'Personal Loan',
-    isApplicable: (ctx) => isPersonalLoan(ctx) && !isNonSalariedSegment(ctx),
+    // !ctx.answers.plIncome: lets income already given for a DIFFERENT product (Home Loan/LAP's
+    // own shared `income` step — see profile.service.ts) in the last 10 minutes skip straight past
+    // this, same class of fix as homeLoan.ts's own income step.
+    isApplicable: (ctx) => isPersonalLoan(ctx) && !isNonSalariedSegment(ctx) && !ctx.answers.plIncome,
     botMessage: () => "What's your monthly income?",
     // Salaried-only by this point (isApplicable excludes non-salaried segments) — no need to hedge
     // with "or average monthly income if self-employed" for a case that can't happen here.
@@ -306,6 +310,11 @@ export const personalLoanSteps: StepDefinition[] = [
       if (!v || v < 5_000) return { ok: false, error: 'Enter your actual monthly income — e.g. 60000.' };
       if (v > MAX_SANE_MONTHLY_AMOUNT) return { ok: false, error: `That doesn't look right — enter your actual monthly income (up to ₹${MAX_SANE_MONTHLY_AMOUNT.toLocaleString('en-IN')}).` };
       return { ok: true, parsed: v };
+    },
+    onAnswer: async (parsed, ctx) => {
+      // Shares the SAME cached value as Home Loan/LAP's own `income` field (not a separate
+      // plIncome cache) — answering it on EITHER side skips the question on the other.
+      void rememberProfile(ctx.answers.mobile as string, { income: parsed as number });
     },
   },
   {

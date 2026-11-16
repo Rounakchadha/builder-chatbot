@@ -21,6 +21,7 @@ import { pincodeService } from '../services/pincode.service';
 import { sendLeadCreatedWebhook } from '../services/webhook.service';
 import { smsService, enforceDuplicateVerifyRateLimit } from '../services/sms.service';
 import { rememberIdentity } from '../services/identity.service';
+import { rememberProfile } from '../services/profile.service';
 import { statusService } from '../services/status.service';
 import { generateLeadId, pickRm } from './rm';
 
@@ -138,6 +139,10 @@ async function establishIdentitySession(
     { mobile, finfinityAccessToken: accessToken, finfinityRefreshToken: refreshToken, remoteCustomerId },
     ctx.answers.identityToken as string | undefined,
   );
+  // Written alongside identityToken above (same data, same moment) rather than having one token
+  // delegate to the other — see profile.service.ts's own doc comment for why. This is what lets a
+  // DIFFERENT product, opened within the next 10 minutes, skip mobile+OTP too.
+  void rememberProfile(mobile, { finfinityAccessToken: accessToken, finfinityRefreshToken: refreshToken, remoteCustomerId });
   return { identityToken };
 }
 
@@ -175,8 +180,9 @@ function formatDob(dobIso: string): string {
 
 /** Shared by 'profileFound' and the duplicate-match-adopted equivalent below — same "here's what
  * we have on file" summary either way, since both cases mean the customer is genuinely a known
- * existing customer by the time this renders, just reached via a different path. */
-function renderFoundProfileSummary(ctx: StepContext): string {
+ * existing customer by the time this renders, just reached via a different path. Exported for
+ * chat.ts's cold-resume path (2026-11-13) — see its own comment for why. */
+export function renderFoundProfileSummary(ctx: StepContext): string {
   const a = ctx.answers;
   const lines: string[] = [];
   if (a.name) lines.push(`<strong>Name:</strong> ${escapeHtml(a.name as string)}`);
@@ -1004,7 +1010,12 @@ export const homeLoanFlow: FlowDefinition = {
       id: 'pan',
       type: 'pan',
       progressLabel: 'About you',
-      isApplicable: (ctx) => ctx.answers.dedupeFound === false,
+      // !ctx.answers.fullName (NOT !ctx.answers.pan — ctx.answers.pan is set to the raw typed
+      // value the INSTANT this step is answered, before panFetch's lookup has even run, so gating
+      // on it would skip panFetch for every brand-new customer too, not just a pre-seeded one.
+      // fullName only ever becomes truthy once a real lookup — fresh or pre-seeded from
+      // profile.service.ts for a DIFFERENT product in the last 10 minutes — has actually completed.
+      isApplicable: (ctx) => ctx.answers.dedupeFound === false && !ctx.answers.fullName,
       botMessage: () => 'Thanks! Please share your PAN so we can look up your details.',
       hint: () => 'Lets us fetch your name and pull your credit bureau report.',
       input: () => ({ type: 'pan' }),
@@ -1018,13 +1029,16 @@ export const homeLoanFlow: FlowDefinition = {
       id: 'panFetch',
       type: 'apiFetch',
       progressLabel: 'Verifying identity',
-      isApplicable: (ctx) => ctx.answers.dedupeFound === false,
+      isApplicable: (ctx) => ctx.answers.dedupeFound === false && !ctx.answers.fullName,
       botMessage: (ctx) => (ctx.answers.fullName ? `We found you as <strong>${escapeHtml(ctx.answers.name as string)}</strong>.` : null),
       input: () => ({ type: 'none' }),
       onAnswer: async (_parsed, ctx) => {
         const identity = await panService.lookup(ctx.answers.pan as string, ctx.answers.finfinityAccessToken as string | undefined);
         const prefilledName = ctx.answers.prefilledName as string | undefined;
         const mismatch = Boolean(prefilledName && identity.name && !namesLooselyMatch(prefilledName, identity.name));
+        // Only ever runs for dedupeFound === false (see isApplicable above), which is exactly the
+        // case with no other way to avoid re-asking PAN for a different product within 10 minutes.
+        void rememberProfile(ctx.answers.mobile as string, { pan: ctx.answers.pan as string, fullName: identity.name, dob: identity.dob, gender: identity.gender });
         return { name: identity.nameMasked, fullName: identity.name, dob: identity.dob, gender: identity.gender, nameMismatchPending: mismatch };
       },
     },
@@ -1063,7 +1077,12 @@ export const homeLoanFlow: FlowDefinition = {
       input: () => ({ type: 'none' }),
       onAnswer: async (_parsed, ctx) => {
         const match = await dedupeService.matchBy('pan', ctx.answers.pan as string, ctx.answers.finfinityAccessToken as string | undefined);
-        if (!match) return { panDuplicateChecked: true };
+        if (!match) {
+          // No collision — safe to let a different product skip this exact check too within the
+          // remembered-profile window, rather than re-running a real API call for the same PAN.
+          void rememberProfile(ctx.answers.mobile as string, { panDuplicateChecked: true });
+          return { panDuplicateChecked: true };
+        }
         return { panDuplicateChecked: true, duplicatePending: true, duplicateField: 'PAN', duplicateMatch: match };
       },
     },
@@ -1352,6 +1371,7 @@ export const homeLoanFlow: FlowDefinition = {
       onAnswer: async (parsed, ctx) => {
         if (ctx.answers.customerId) await customerService.updateMissingField(ctx.answers.customerId as string, 'pincode', parsed as string);
         const area = await pincodeService.lookupArea(parsed as string);
+        void rememberProfile(ctx.answers.mobile as string, { pincode: parsed as string });
         return area ? { pincodeArea: area } : undefined;
       },
     },
@@ -1560,6 +1580,7 @@ export const homeLoanFlow: FlowDefinition = {
         // the line above is a no-op for them — cache by mobileHash instead, so dedupeCheck can
         // find it next time and skip this whole OTP for a customer we've already scored.
         await customerService.cacheBureauScore(hmacLookup(ctx.answers.mobile as string), maskMobile(ctx.answers.mobile as string), creditScore, bureauSource as 'bureau' | 'experian');
+        void rememberProfile(ctx.answers.mobile as string, { creditScore, bureauSource: bureauSource as 'bureau' | 'experian' });
         return { creditScore, bureauSource, bureauScoreShown: true };
       },
     },
@@ -1676,6 +1697,7 @@ export const homeLoanFlow: FlowDefinition = {
           logger.error({ err, event: 'bureau_real_validate_failed' }, 'validatebureau failed');
           throw new Error('Incorrect OTP. Please try again.');
         }
+        void rememberProfile(a.mobile as string, { creditScore: pull.creditScore, bureauSource: pull.source });
         return {
           creditScore: pull.creditScore,
           bureauSource: pull.source,
@@ -1725,6 +1747,7 @@ export const homeLoanFlow: FlowDefinition = {
                 email: ctx.answers.email as string | undefined,
               })
             : undefined;
+        if (pull) void rememberProfile(ctx.answers.mobile as string, { creditScore: pull.creditScore, bureauSource: pull.source });
         // Replaces the masked name panFetch showed with the real one, now that both OTPs
         // (identity, then bureau consent) are cleared — same bar the dedupe-found branch clears
         // with just its one OTP before ever storing the real name. Updating the actual answers.name
@@ -1805,7 +1828,11 @@ export const homeLoanFlow: FlowDefinition = {
       id: 'income',
       type: 'number',
       progressLabel: 'Financial details',
-      isApplicable: (ctx) => isEligibilityIntent(ctx.answers) && isHomeLoanOrLap(ctx.answers) && isIndividualPan(ctx.answers.pan as string | undefined),
+      // !ctx.answers.income: lets income already given for a DIFFERENT product (Home Loan/LAP
+      // share this exact question — see isHomeLoanOrLap) in the last 10 minutes skip straight past
+      // this (see profile.service.ts) — without this check, a pre-seeded income would be silently
+      // ignored and asked again, same class of bug as pan/panFetch's own !ctx.answers.fullName gate.
+      isApplicable: (ctx) => isEligibilityIntent(ctx.answers) && isHomeLoanOrLap(ctx.answers) && isIndividualPan(ctx.answers.pan as string | undefined) && !ctx.answers.income,
       botMessage: () => "What's your monthly income?",
       // Segment is already known by this step (asked earlier) — no need to hedge with "or... if
       // self-employed" when we can just say the one that actually applies (2026-10-31 instruction).
@@ -1820,6 +1847,9 @@ export const homeLoanFlow: FlowDefinition = {
           return { ok: false, error: `That doesn't look right — enter your actual monthly income (up to ₹${MAX_SANE_MONTHLY_AMOUNT.toLocaleString('en-IN')}).` };
         }
         return { ok: true, parsed: v };
+      },
+      onAnswer: async (parsed, ctx) => {
+        void rememberProfile(ctx.answers.mobile as string, { income: parsed as number });
       },
     },
     {

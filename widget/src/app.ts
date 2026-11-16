@@ -1,6 +1,5 @@
 import { CHECK_ELIGIBILITY, CHECK_EXISTING_APPLICATION, type ChatTurnResponse, type InputSpec } from '@builder-chatbot/shared';
 import { ChatApi, SessionExpiredError, describeApiError } from './api';
-import { cisLogo } from './cisLogo';
 import { ErrorReporter } from './errorReporter';
 // The finfinity wordmark's own fill colors (white text, teal accents) assume a dark background —
 // inlined raw (not as an <img src>) so it can sit inside a small dark chip in the otherwise-light
@@ -151,6 +150,56 @@ export class ChatWidget {
    * moment a newer one renders, instead of staying clickable and silently submitting a stale
    * answer against whatever step the conversation has since moved past. */
   private activeChoiceEl: HTMLElement | null = null;
+  /** Set by restart()'s keepChatLog path, removed the moment a real response (success or error)
+   * actually arrives — see restart()'s own comment for why this exists. */
+  private productSwitchLoadingEl: HTMLElement | null = null;
+  /** True from the moment restart() pre-stashes the outgoing product's log (see its own 2026-11-16
+   * fix) until switchProductLog consumes it on the switch's actual response — tells
+   * switchProductLog not to stash AGAIN (there's nothing left to stash; it would overwrite the
+   * real one with an empty array). */
+  private pendingSwitchStashed = false;
+  /** Which product the chat log currently on screen belongs to (from the last response's own
+   * `product` field) — compared against each new response in renderTurn to detect an actual
+   * product switch (not just "a different question"). Undefined until the first response with a
+   * known product ever arrives. */
+  private currentProduct: string | undefined;
+  /** Per-SESSION (keyed by sessionToken, not a single scalar) record of the last stepId actually
+   * rendered for that session — lets renderTurn detect "the server just told me to show the exact
+   * same question/result I already have on screen for THIS product's session" and skip
+   * re-appending it, regardless of WHY that happened (restoring a per-product stash, a second
+   * concurrent response for the same switch landing after the first already rendered it, anything
+   * else). Bug fixed 2026-11-13: the earlier fix only caught the stash-restore case, and only once
+   * per product (a stash entry is consumed/removed the moment it's restored) — a second or third
+   * visit back to the same product, or closely-timed clicks, still duplicated the question. Must be
+   * keyed per sessionToken, not a single last-seen value — a single scalar gets overwritten the
+   * moment you switch to a DIFFERENT product's session in between, so it would no longer match when
+   * you come back to the first one even though that's exactly the repeat-render case this exists to
+   * catch. Each product keeps its own sessionToken for the life of its session, so this map holds
+   * one entry per product actually visited; never cleared out (a handful of products, not a memory
+   * concern for a single widget instance's lifetime). */
+  private lastRenderedStepBySession: Map<string, string> = new Map();
+  /** Catches a duplicate that lastRenderedStepBySession above can't: a BRAND NEW sessionToken
+   * showing the exact same step+message as the product's own immediately-previous turn (2026-11-14
+   * — reported the same first question piling up 2-3x on reopening a product). Before mobile is
+   * known there's nothing to resume by (profile.service.ts is mobile-keyed), so every restart of an
+   * anonymous, not-yet-identified visit necessarily mints a genuinely new session/token — but if
+   * nothing about the product actually changed (switchProductLog didn't restore/stash anything,
+   * i.e. we're still looking at that same product's live log) and the content is identical to what's
+   * already the last thing shown there, it's the same repeat-render case lastRenderedStepBySession
+   * exists to catch, just reached via a different session each time instead of the same one. */
+  private lastRenderedSignatureByProduct: Map<string, string> = new Map();
+  /** Set by restart()'s plain (non-keepChatLog) path — the explicit "Start over" button/confirm
+   * dialog — and read/cleared by the very next start() call. Tells the server this is a genuine,
+   * deliberate restart (see shared's ChatMessageRequest.forceNew), not just the first open() of a
+   * fresh page load, so it knows to ignore/forget any per-product resume pointer instead of quietly
+   * resuming the same session (2026-11-13 fix). */
+  private forceNewOnNextStart = false;
+  /** Each product's own chat history, kept separate (2026-11-12 instruction: switching products
+   * used to show one merged scrollback across all of them, confusing — Home Loan's messages/
+   * buttons mixed in with Personal Loan's). Stores the actual DOM nodes (not serialized HTML),
+   * since choice buttons' click handlers are plain JS closures that innerHTML round-tripping would
+   * silently lose. */
+  private readonly chatLogsByProduct = new Map<string, ChildNode[]>();
   /** See scrollToResultTop's and typeOutBubble's own doc comments — lets a definitive "scroll to
    * here" moment (the result card arriving) cancel a bot-reply typing animation's own per-frame
    * scroll-following still in flight, instead of the two fighting over where the view ends up. */
@@ -186,6 +235,10 @@ export class ChatWidget {
    * launchToken.service.ts), never persisted to localStorage like STORAGE_KEY/IDENTITY_STORAGE_KEY
    * above, since it's single-use and tied to this one open() call, not something to resume later. */
   private launchToken: string | null = null;
+  /** The last launchToken open() actually acted on (restarted or did the very first start() for) —
+   * see open()'s own doc comment (2026-11-14): a REPEAT of this exact value means nothing about the
+   * customer's identity/product has changed since, so there's nothing to restart for. */
+  private lastAppliedLaunchToken: string | null = null;
   private errorReporter: ErrorReporter;
 
   private panelEl!: HTMLDivElement;
@@ -269,7 +322,7 @@ export class ChatWidget {
       </nav>
       <header class="la-header">
         <div class="la-brand">
-          <img class="la-header-logo" src="${cisLogo}" alt="Count Infinity Services" />
+          <img class="la-header-logo" src="${this.opts.apiBaseUrl}/assets/cis-logo.webp" alt="Count Infinity Services" />
           <div class="la-brand-copy">
             <h2 id="laTitle">Loan Eligibility <em>Assistant</em></h2>
             <span class="la-eyebrow">Personal Suite</span>
@@ -522,7 +575,48 @@ export class ChatWidget {
    * later open() call in the same page session, same as identityToken/STORAGE_KEY never resetting
    * mid-session. */
   open(launchToken?: string): void {
-    if (launchToken) this.launchToken = launchToken;
+    // Bug fixed 2026-11-13: this used to only restart when `this.started` was already true (i.e.
+    // NOT the first open() this page load) and the token differed from an in-memory "last token"
+    // that resets on every reload. That meant the very FIRST click after a reload always fell
+    // through to silently resuming whatever sessionToken happened to be sitting in localStorage —
+    // which could be for a COMPLETELY different product (reported: reload while on Personal Loan,
+    // click Home Loan, it stays stuck on Personal Loan until clicked a second time). The same
+    // in-memory comparison also misfired in other ways (reported: switching products sometimes
+    // got stuck on the wrong one, sometimes only self-corrected after several seconds).
+    //
+    // Fix: an explicit launchToken is now ALWAYS authoritative, every single time, full stop — we
+    // no longer try to guess client-side whether it's "really" a different product. The server's
+    // own per-product session lookup (profile.service.ts/chat.ts) reliably resolves resume-vs-fresh
+    // from the token's own decrypted mobile+product, which is far more trustworthy than anything
+    // this widget can infer about its own in-memory state across reloads/re-clicks.
+    //
+    // Bug fixed 2026-11-14 (reported: reopening the same product piled up the same first question
+    // 2-3 times, with a "Switching…" bubble on top) — "always authoritative" above was about a
+    // DIFFERENT token ever being ignored, not about the host calling open() more than once with the
+    // EXACT SAME token for whatever's already on screen (a re-render, a second click handler, etc).
+    // Before mobile is known, every restart necessarily starts a genuinely new server-side session
+    // (there's nothing to resume by yet — see profile.service.ts, keyed on mobile), and this product
+    // hasn't actually changed, so switchProductLog's own "no-op unless the product changed" check
+    // never clears the log either — the two gaps together let every repeat pile up a fresh copy of
+    // the same first question. A literal repeat of the last token actually applied changes nothing
+    // about who the customer is, so there's nothing to restart for.
+    if (launchToken) {
+      const isRepeatOfLastApplied = this.started && launchToken === this.lastAppliedLaunchToken;
+      this.launchToken = launchToken;
+      this.lastAppliedLaunchToken = launchToken;
+      if (isRepeatOfLastApplied) {
+        // Already showing exactly this — just bring the panel up, nothing to restart.
+      } else if (this.started) {
+        this.restart({ keepChatLog: true });
+      } else {
+        // First open() this page load — still must never blindly resume a stale sessionToken left
+        // in localStorage from a previous page load/product before this launchToken is honored.
+        safeRemoveItem(STORAGE_KEY);
+        this.sessionToken = null;
+        this.started = true;
+        void this.start();
+      }
+    }
     this.toggle(true);
   }
 
@@ -575,10 +669,12 @@ export class ChatWidget {
 
   private async start(): Promise<void> {
     const gen = ++this.requestGen;
+    const forceNew = this.forceNewOnNextStart;
+    this.forceNewOnNextStart = false;
     try {
       const resp = this.sessionToken
         ? await this.api.send({ sessionToken: this.sessionToken })
-        : await this.api.send({ identityToken: safeGetItem(IDENTITY_STORAGE_KEY) ?? undefined, launchToken: this.launchToken ?? undefined });
+        : await this.api.send({ identityToken: safeGetItem(IDENTITY_STORAGE_KEY) ?? undefined, launchToken: this.launchToken ?? undefined, forceNew: forceNew || undefined });
       if (gen !== this.requestGen) return; // a newer request (e.g. Start over) began while this one was in flight
       this.startRetryCount = 0;
       this.sessionToken = resp.sessionToken;
@@ -653,6 +749,50 @@ export class ChatWidget {
    * and the flex-end bug it exists to avoid would effectively come right back. */
   private resetChatLog() {
     this.chatLogEl.innerHTML = '<div class="la-chat-spacer" aria-hidden="true"></div>';
+  }
+
+  /** Keeps each product's chat history visually separate (2026-11-12 instruction) — called at the
+   * top of every renderTurn with that turn's own `product`. A no-op unless the product genuinely
+   * changed since the last turn (covers both a real product switch AND this widget's very first
+   * response ever, where there's nothing yet to stash). Moves actual DOM nodes, not serialized
+   * HTML — choice buttons' click handlers are plain JS closures an innerHTML round-trip would
+   * silently lose. The `.la-chat-spacer` first child (see resetChatLog's own comment) is never
+   * moved; it stays put in the live log regardless of whose history is currently shown. */
+  /** Returns true when a previously-stashed log was just restored — see renderTurn's own use of
+   * this: the restored content's LAST element is always the exact question/message the customer
+   * was already looking at when they left, so the caller must not also append this turn's
+   * botMessage/composer on top of it (that was the duplicated-question bug reported 2026-11-13 —
+   * "What's your gender?" piling up, once per switch-away-and-back). */
+  /** The actual stashing half of switchProductLog, pulled out so restart() can call it immediately
+   * on click (see its own 2026-11-16 fix) instead of waiting for the switch's response to arrive. */
+  private stashCurrentLog(): void {
+    if (!this.currentProduct) return;
+    const toStash = Array.from(this.chatLogEl.childNodes).filter((n) => !(n instanceof HTMLElement && n.classList.contains('la-chat-spacer')));
+    toStash.forEach((n) => n.remove());
+    this.chatLogsByProduct.set(this.currentProduct, toStash);
+  }
+
+  private switchProductLog(newProduct: string | undefined): boolean {
+    if (!newProduct || newProduct === this.currentProduct) {
+      if (newProduct) this.currentProduct = newProduct;
+      return false;
+    }
+    // Bug fixed 2026-11-16 (reported: switching products showed the OLD product's messages/choice
+    // buttons for a second or two before "Switching…" even appeared, then another second or two of
+    // that stale content sitting there during the real network wait) — restart() now stashes the
+    // outgoing product's content and clears the visible log the INSTANT a switch starts (see its
+    // own `pendingSwitchStashed`), rather than this function doing it only once the switch's
+    // response finally arrives. Skip redoing it here — there's nothing left in chatLogEl to stash
+    // (it would just overwrite the real stash restart() already made with an empty one).
+    if (this.currentProduct && !this.pendingSwitchStashed) this.stashCurrentLog();
+    this.pendingSwitchStashed = false;
+    const restored = this.chatLogsByProduct.get(newProduct);
+    if (restored) {
+      restored.forEach((n) => this.chatLogEl.appendChild(n));
+      this.chatLogsByProduct.delete(newProduct); // re-stashed under this key again next time we leave it
+    }
+    this.currentProduct = newProduct;
+    return Boolean(restored);
   }
 
   // Message markup/classes below (.la-message/.la-avatar/.la-bubble) are copied verbatim from
@@ -812,12 +952,63 @@ export class ChatWidget {
   }
 
   private async renderTurn(resp: ChatTurnResponse) {
+    this.productSwitchLoadingEl?.remove();
+    this.productSwitchLoadingEl = null;
+    this.switchProductLog(resp.product);
     this.updateProgress(resp);
 
     // Present once mobile+OTP is freshly verified — stored so a future brand-new session (a
     // normal restart, or just reopening the widget) can skip asking for both again, as long as
     // it's still within the remembered window. Safe to re-store the same value repeatedly.
     if (resp.identityToken) safeSetItem(IDENTITY_STORAGE_KEY, resp.identityToken);
+
+    // "The server just told me to show the exact same question/result already on screen for THIS
+    // product's session" — see lastRenderedStepBySession's own doc comment for why this check (not
+    // whether a stash happened to be restored) is what actually prevents duplication, no matter how
+    // many times someone switches back and forth. Only a genuinely mid-flight "none"-type step (an
+    // apiFetch/message still auto-continuing toward something not shown yet) needs to fall through
+    // to the normal path — a repeat of a FINISHED result is also caught here even though it's
+    // "none"-type too.
+    const productSignatureKey = resp.product ? `product:${resp.product}` : undefined;
+    const thisSignature = `${resp.stepId}::${resp.botMessage ?? ''}`;
+    // Bug fixed 2026-11-16 (reported: Home Loan -> Personal Loan -> back to Home Loan duplicated
+    // the question again) — this used to also require `!stashRestored`, on the assumption that a
+    // restored stash only ever happens for a session already fully handled elsewhere. But switching
+    // BACK to a product you were already on is exactly when a stash DOES get restored (that's the
+    // whole point of chatLogsByProduct) — and pre-mobile, that restored session is immediately
+    // followed by a brand-new server session's turn for the exact same first question (nothing to
+    // resume by yet, see profile.service.ts), which used to sail right past this check and get
+    // appended a second time underneath the just-restored copy.
+    const isDuplicateFreshSession =
+      !resp.errorText &&
+      productSignatureKey !== undefined &&
+      this.lastRenderedSignatureByProduct.get(productSignatureKey) === thisSignature;
+    const isRepeat =
+      (!resp.errorText && this.lastRenderedStepBySession.get(resp.sessionToken) === resp.stepId) || isDuplicateFreshSession;
+    const isRepeatResult = isRepeat && resp.done && Boolean(resp.result);
+    if (isRepeat && (resp.input.type !== 'none' || isRepeatResult)) {
+      if (resp.input.type === 'choice') {
+        const lastChoiceWrap = Array.from(this.chatLogEl.querySelectorAll<HTMLElement>('.la-chat-options')).pop();
+        this.activeChoiceEl = lastChoiceWrap ?? null;
+      } else if (isRepeatResult) {
+        const restoredResultEl = Array.from(this.chatLogEl.querySelectorAll<HTMLDivElement>('.lc-result-wrapper')).pop();
+        if (restoredResultEl) this.resultContainerEl = restoredResultEl;
+        this.resultCardShown = true;
+        this.panOfferOffered = resp.panOffer ?? false;
+        this.panOfferNeedsMobile = resp.panOfferNeedsMobile ?? false;
+        if (resp.stepId === 'result' && resp.statusCheck) this.statusActionsShown = true;
+      } else {
+        // Every other interactive type's actual input lives in the separate composerEl, never
+        // part of any stash (cleared on every restart/switch) — rebuild it so there's something to
+        // answer with. Never touches chatLogEl for these types, so it can't duplicate anything.
+        this.renderComposer(resp);
+      }
+      void this.profilePanel.refresh();
+      this.scrollDown();
+      return;
+    }
+    this.lastRenderedStepBySession.set(resp.sessionToken, resp.stepId);
+    if (productSignatureKey !== undefined) this.lastRenderedSignatureByProduct.set(productSignatureKey, thisSignature);
 
     if (resp.errorText) {
       // The submission was rejected — discard any deferred bubble for it (a wrong OTP never gets
@@ -860,6 +1051,13 @@ export class ChatWidget {
       this.pendingUserBubbleText = null;
     }
 
+    // Its own bubble, never merged into botMessage's (2026-11-13 instruction) — appended first so
+    // it reads as "here's what we know" followed by a separate "now, the actual question" bubble,
+    // not one combined wall of text.
+    if (resp.recapMessage) {
+      await this.appendBotBubble(resp.recapMessage);
+    }
+
     if (resp.botMessage) {
       // A result-type terminal step is always flagged loading server-side (checked via resp.done,
       // not stepId === 'result', since Personal/Gold/Business loan each have their own terminal
@@ -893,6 +1091,10 @@ export class ChatWidget {
         // since the composer's own scroll/height cap had to be stripped to make it look blended —
         // moving the actual DOM node is the correct fix, not a CSS illusion on the wrong parent).
         this.resultContainerEl = document.createElement('div');
+        // Identifying marker (2026-11-13) — lets a per-product stash restore (see
+        // switchProductLog/renderTurn) relocate this exact node later; a plain unmarked div can't
+        // be found again by any selector.
+        this.resultContainerEl.className = 'lc-result-wrapper';
         this.chatLogEl.appendChild(this.resultContainerEl);
         this.panOfferOffered = resp.panOffer ?? false;
         this.panOfferNeedsMobile = resp.panOfferNeedsMobile ?? false;
@@ -1129,7 +1331,17 @@ export class ChatWidget {
     }
     this.scrollDownIfPinned(this.isNearBottom());
     if (result === undefined || !this.resultCardShown) return;
+    // Bug fixed 2026-11-11 (reported: edit messages landing BELOW the recalculated cards instead
+    // of above them): resultContainerEl is created once, on the very first result render, and
+    // simply has its innerHTML replaced on every later recompute — it never moves in the DOM, so
+    // it always stayed wherever it first landed in chatLogEl, ABOVE every bot bubble appended after
+    // it (the two "Got it — ..." / "Here's your updated eligibility" messages above included).
+    // appendChild on a node already in the document MOVES it rather than duplicating it — this
+    // puts the card back at the bottom, below the messages just appended above, matching the
+    // intended order: message(s) on top while recalculating, fresh cards below once ready.
+    this.chatLogEl.appendChild(this.resultContainerEl);
     this.renderResultInto(result);
+    this.scrollToResultTop();
   }
 
   /** Rebuilding the result card (renderResultInto) wipes the empty #lc-pan-offer container it
@@ -1824,6 +2036,8 @@ export class ChatWidget {
   }
 
   private renderFatalError(message = 'Sorry, something went wrong on our end. Please try again in a moment.', cause?: unknown) {
+    this.productSwitchLoadingEl?.remove();
+    this.productSwitchLoadingEl = null;
     // Reported here, in the one shared place every "customer is now looking at a broken widget"
     // path already funnels through, rather than at each of this method's call sites individually
     // (see errorReporter.ts's own doc comment for why this matters — these are deliberately-caught
@@ -1882,7 +2096,13 @@ export class ChatWidget {
     overlay.querySelector<HTMLButtonElement>('[data-confirm-ok]')!.focus();
   }
 
-  private restart() {
+  // keepChatLog (2026-11-12 instruction) — a genuine "Start over" (the confirm-dialog path) should
+  // still wipe the visible transcript, but switching products via open() with a new launchToken
+  // should NOT: the customer typed/answered real things in the old product's conversation and
+  // expects to still see them, not have the screen go blank the instant they click a different
+  // card. The underlying session itself is never lost either way (see profile.service.ts/chat.ts's
+  // per-product resume) — this only controls what's visibly on screen.
+  private restart(opts?: { keepChatLog?: boolean }) {
     // Invalidate any request still in flight from before this restart (security-review finding,
     // 2026-10-23) — without this, a reply to the OLD conversation could land right after and
     // overwrite the freshly-reset screen with stale content.
@@ -1896,8 +2116,59 @@ export class ChatWidget {
     this.panOfferNeedsMobile = false;
     this.panOfferResolved = null;
     this.statusActionsShown = false;
+    // Bug fixed 2026-11-12, then PARTIALLY REVERTED 2026-11-13: removing the DOM node here (not
+    // just nulling the reference) was meant to stop an old product's still-unanswered choice
+    // buttons from staying visible, live and clickable, right alongside the new product's content.
+    // That's no longer a risk — switchProductLog (called a moment later, once the new product's
+    // response actually arrives) now reliably stashes EVERY child of chatLogEl away per product,
+    // buttons included, and restores them later exactly as they were. But deleting the node here,
+    // BEFORE that stash ever runs, means it's gone for good the instant you switch away — so
+    // switchProductLog has nothing left to stash, and coming back to that product later shows the
+    // question text (restored fine) with no way to answer it at all (reported 2026-11-13: "LAP mein
+    // typing box hi vanish ho gaya" — the "box" was these choice buttons). Only a genuine restart
+    // (no keepChatLog — resetChatLog() below wipes the whole log anyway) still needs the DOM node
+    // gone; a product switch just needs the reference cleared so a stray click can't double-submit
+    // while the switch is in flight, and lets switchProductLog capture the real buttons untouched.
+    if (!opts?.keepChatLog) this.activeChoiceEl?.remove();
     this.activeChoiceEl = null;
-    this.resetChatLog();
+    // A genuine restart (never the product-switch/keepChatLog path) must tell the server this is
+    // deliberate — see forceNewOnNextStart's own doc comment for why that distinction matters.
+    if (!opts?.keepChatLog) this.forceNewOnNextStart = true;
+    if (opts?.keepChatLog) {
+      // Immediate feedback for a product switch (2026-11-12 instruction) — without this, the OLD
+      // product's last question (now with its buttons gone per the fix above, but its TEXT still
+      // sitting there) looks frozen for however long the switch's real network round trip takes
+      // (a few seconds — dedupeCheck/profile-recall hit real Finfinity APIs), with nothing on
+      // screen indicating anything is happening.
+      // Bug fixed 2026-11-14 (reported: a permanent "Switching…" bubble stuck above the real first
+      // message, on what looked like a fresh session) — if open() fires a second time with a
+      // launchToken before the first switch's response has come back (restart() called twice in a
+      // row), this used to just append ANOTHER loading row, leaving the first one's reference
+      // overwritten and orphaned in the DOM forever — renderTurn only ever clears whatever
+      // productSwitchLoadingEl currently points at, never any earlier one left behind. Removing any
+      // stale one first means there's only ever at most one in the log at a time.
+      this.productSwitchLoadingEl?.remove();
+      // Bug fixed 2026-11-16 (reported: the outgoing product's own messages/choice buttons stayed
+      // fully visible for a second or two before "Switching…" even showed up, then sat there for
+      // the whole real network wait after that) — stash it away and clear the visible log to just
+      // the spacer RIGHT NOW, not whenever the switch's response eventually comes back (that's what
+      // switchProductLog, called from renderTurn, used to wait for). Guarded by
+      // pendingSwitchStashed so a second restart() firing before the first's response lands (the
+      // 2026-11-14 double-switch race) doesn't stash an already-emptied log on top of the real one.
+      if (!this.pendingSwitchStashed) {
+        this.stashCurrentLog();
+        this.pendingSwitchStashed = true;
+      }
+      this.clearComposer();
+      const row = document.createElement('div');
+      row.className = 'la-message';
+      row.innerHTML = `<span class="la-avatar">${ICON.bot}</span><div class="la-bubble lc-loading-row"><div class="lc-spinner"></div><span class="lc-loading-label">Switching…</span></div>`;
+      this.chatLogEl.appendChild(row);
+      this.scrollDown();
+      this.productSwitchLoadingEl = row;
+    } else {
+      this.resetChatLog();
+    }
     if (this.progressStepEl) this.progressStepEl.textContent = 'GETTING STARTED';
     if (this.progressPctEl) this.progressPctEl.textContent = '0% complete';
     if (this.segmentsEl) {

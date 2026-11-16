@@ -119,7 +119,24 @@ async function main() {
   // registered last so /api/*, /health, /admin/* above still take priority over same-named static
   // files. dist/index.js lives at /app/server/dist/index.js in the image; test-page is copied to
   // /app/test-page alongside it (see Dockerfile).
-  await app.register(staticFiles, { root: path.join(__dirname, '..', '..', 'test-page') });
+  //
+  // setHeaders (2026-11-16, speed audit): everything under /assets/ — fonts, lender logos, the CIS
+  // logo, background images — never changes its CONTENT once added (a new lender gets a new
+  // filename, an updated logo would too); there's nothing to invalidate. Before this, every one of
+  // these loaded with the framework's own default `Cache-Control: public, max-age=0`, so even a
+  // returning visitor's browser re-validated EVERY font/image file on EVERY page load — a real
+  // network round trip per file for content that was never going to be different. A full year +
+  // `immutable` skips that round trip entirely for a repeat visit. Deliberately NOT applied to
+  // widget.js or the HTML pages themselves — those genuinely change on every deploy and have no
+  // cache-busting filename/hash scheme, so caching those long would strand old client code.
+  await app.register(staticFiles, {
+    root: path.join(__dirname, '..', '..', 'test-page'),
+    setHeaders: (res, filePath) => {
+      if (filePath.includes(`${path.sep}assets${path.sep}`)) {
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      }
+    },
+  });
 
   await app.listen({ port: env.PORT, host: '0.0.0.0' });
   logger.info(`server listening on :${env.PORT}`);
