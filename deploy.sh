@@ -64,7 +64,7 @@ echo "==> Pointing the test page at the public API before building..."
 ssh -i "$SSH_KEY" "$SERVER_USER@$SERVER_HOST" "cd $SERVER_PATH/test-page && sed -i -E 's#data-api-base=\"http://[^\"]+\"#data-api-base=\"$PUBLIC_API_BASE\"#' index.html sdk-demo.html embed.html"
 
 echo "==> Building the new image on the server (not yet live)..."
-ssh -i "$SSH_KEY" "$SERVER_USER@$SERVER_HOST" "cd $SERVER_PATH && docker compose -p $COMPOSE_PROJECT build server"
+ssh -i "$SSH_KEY" "$SERVER_USER@$SERVER_HOST" "cd $SERVER_PATH && docker compose -p $COMPOSE_PROJECT build server hl-eligibility"
 
 # Security-review finding, 2026-10-23: this used to restart the server with the NEW code first, and
 # only run migrations after — a real window where new code (expecting the new schema) ran against
