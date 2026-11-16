@@ -1,6 +1,5 @@
 import { CHECK_ELIGIBILITY, CHECK_EXISTING_APPLICATION, type ChatTurnResponse, type InputSpec } from '@builder-chatbot/shared';
 import { ChatApi, SessionExpiredError, describeApiError } from './api';
-import { cisLogo } from './cisLogo';
 import { ErrorReporter } from './errorReporter';
 // The finfinity wordmark's own fill colors (white text, teal accents) assume a dark background —
 // inlined raw (not as an <img src>) so it can sit inside a small dark chip in the otherwise-light
@@ -318,7 +317,7 @@ export class ChatWidget {
       </nav>
       <header class="la-header">
         <div class="la-brand">
-          <img class="la-header-logo" src="${cisLogo}" alt="Count Infinity Services" />
+          <img class="la-header-logo" src="${this.opts.apiBaseUrl}/assets/cis-logo.webp" alt="Count Infinity Services" />
           <div class="la-brand-copy">
             <h2 id="laTitle">Loan Eligibility <em>Assistant</em></h2>
             <span class="la-eyebrow">Personal Suite</span>
