@@ -15,6 +15,18 @@ COMPOSE_PROJECT="builder-chatbot"
 SSH_KEY="$HOME/.ssh/id_ed25519_finfinity"
 LOCAL_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/"
 
+# Bug fixed 2026-11-16: this script only ever rebuilt the SERVER's docker image (below) — a source
+# edit to widget/src/*.ts alone never got compiled, so the rsync below just shipped whatever stale
+# bytes were already sitting in test-page/widget.js, silently deploying old client code under a
+# "deploy succeeded" message (hit for real, 2026-11-13/14: two widget fixes landed on UAT with zero
+# effect since the live widget.js still had neither of them). Building here, before the copy/rsync,
+# makes that impossible going forward. widget-finfinity is deliberately excluded — it's a separate,
+# intentionally-behind design variant (see test-page's own widget-finfinity.js) that only gets
+# ported over on request, not something this script should silently keep in sync.
+echo "==> Building the widget from source..."
+(cd "$LOCAL_PATH/widget" && npm run build)
+cp "$LOCAL_PATH/widget/dist/widget.js" "$LOCAL_PATH/test-page/widget.js"
+
 echo "==> Copying files to the server..."
 # These never leave this Mac, regardless of what .gitignore says — rsync copies whatever's on
 # disk, git-ignored or not, so a real test customer's data (cibil_profile.txt) and local junk
