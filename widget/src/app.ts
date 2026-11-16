@@ -937,7 +937,7 @@ export class ChatWidget {
   private async renderTurn(resp: ChatTurnResponse) {
     this.productSwitchLoadingEl?.remove();
     this.productSwitchLoadingEl = null;
-    const stashRestored = this.switchProductLog(resp.product);
+    this.switchProductLog(resp.product);
     this.updateProgress(resp);
 
     // Present once mobile+OTP is freshly verified — stored so a future brand-new session (a
@@ -954,9 +954,16 @@ export class ChatWidget {
     // "none"-type too.
     const productSignatureKey = resp.product ? `product:${resp.product}` : undefined;
     const thisSignature = `${resp.stepId}::${resp.botMessage ?? ''}`;
+    // Bug fixed 2026-11-16 (reported: Home Loan -> Personal Loan -> back to Home Loan duplicated
+    // the question again) — this used to also require `!stashRestored`, on the assumption that a
+    // restored stash only ever happens for a session already fully handled elsewhere. But switching
+    // BACK to a product you were already on is exactly when a stash DOES get restored (that's the
+    // whole point of chatLogsByProduct) — and pre-mobile, that restored session is immediately
+    // followed by a brand-new server session's turn for the exact same first question (nothing to
+    // resume by yet, see profile.service.ts), which used to sail right past this check and get
+    // appended a second time underneath the just-restored copy.
     const isDuplicateFreshSession =
       !resp.errorText &&
-      !stashRestored &&
       productSignatureKey !== undefined &&
       this.lastRenderedSignatureByProduct.get(productSignatureKey) === thisSignature;
     const isRepeat =
