@@ -292,33 +292,14 @@ export async function ensureLeadOnce(input: EnsureLeadInput): Promise<LeadSyncRe
     rmEmail: rm?.email ?? null,
   });
 
-  // 2. A prior lead for the SAME real customer + product, from a DIFFERENT conversation? Only
-  // meaningful once we have a real remoteCustomerId (mock mode has none — no cross-session identity
-  // to dedupe against there, which is fine, mock mode was never the real duplicate-email problem).
-  if (input.remoteCustomerId !== undefined) {
-    const prior = await prisma.lead.findFirst({
-      where: { remoteCustomerId: input.remoteCustomerId, product: input.product, builderLeadId: { not: null } },
-      orderBy: { createdAt: 'desc' },
-    });
-    if (prior?.builderLeadId) {
-      const rm = rmFromRow(prior);
-      try {
-        await prisma.lead.create({ data: leadRowData(prior.builderLeadId, 'synced', rm) });
-      } catch (err) {
-        if (!(err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002')) throw err;
-      }
-      logger.info(
-        { event: 'lead_reused_existing', conversationId: input.conversationId, remoteCustomerId: input.remoteCustomerId, product: input.product, builderLeadId: prior.builderLeadId },
-        'reusing an already-created real lead for this customer+product instead of creating a duplicate',
-      );
-      // Same original RM every time a returning customer's lead is reused — never a placeholder,
-      // never a freshly reassigned one (explicit instruction, 2026-11-13).
-      return { builderLeadId: prior.builderLeadId, status: 'synced', reused: true, rm, lastSyncedFinancialsJson: prior.lastSyncedFinancialsJson };
-    }
-  }
-
-  // 3. Genuinely new — create for real, same race-recovery as before (P2002 = a true concurrent
+  // 2. Genuinely new — create for real, same race-recovery as before (P2002 = a true concurrent
   // second request for this same conversation won the insert a moment ago).
+  //
+  // Removed 2026-11-16 (explicit instruction): this used to check for a prior lead for the SAME
+  // real customer + product from a DIFFERENT conversation and reuse it instead of creating a new
+  // one — every repeat run of the same customer+product now gets its own genuinely new real lead,
+  // and CIS's webhook fires for it too, same as any other new lead. Only the SAME-conversation guard
+  // above (a double click/retry within one conversation) still skips creating a second lead.
   const result = await leadService.createLead(input);
   try {
     await prisma.lead.create({ data: leadRowData(result.builderLeadId, result.status, result.rm) });
