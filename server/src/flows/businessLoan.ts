@@ -7,6 +7,8 @@ import { validateAddress, validateLandmark, validatePincode } from './addressVal
 import { pincodeService } from '../services/pincode.service';
 import { leadCreatedMessage } from './rm';
 import { sendLeadCreatedWebhook } from '../services/webhook.service';
+import { findMissingMandatoryFields, logMissingMandatoryFields } from '../services/mandatoryFields.service';
+import { calcAge, MIN_APPLICANT_AGE_YEARS } from './homeLoan';
 import {
   businessLoanService,
   CONSTITUTION_TO_BUSINESS_TYPE,
@@ -220,6 +222,17 @@ export const businessLoanSteps: StepDefinition[] = [
     botMessage: () => null,
     input: () => ({ type: 'none' }),
     onAnswer: async (_parsed, ctx) => {
+      // Age gate (2026-11-17 instruction — same as goldLoan.ts's own copy of this check, see its
+      // comment for the full reasoning) — checked before the real lead below, the earliest point
+      // one would otherwise be created for this product.
+      const a = ctx.answers;
+      if (a.dob && calcAge(a.dob as string) < MIN_APPLICANT_AGE_YEARS) {
+        return { blBlocked: 'underage' as const };
+      }
+      // Mandatory-fields diagnostic (2026-11-17, see homeLoan.ts's computeResultPayload for the
+      // full "ask, don't block" reasoning) — log-only, should be unreachable in practice.
+      const missing = findMissingMandatoryFields(a);
+      if (missing.length > 0) logMissingMandatoryFields(ctx.conversationId, 'Business Loan', missing);
       const lead = await businessLoanService.createLead({
         conversationId: ctx.conversationId,
         mobile: ctx.answers.mobile as string,
@@ -642,6 +655,7 @@ export const businessLoanSteps: StepDefinition[] = [
       const payload = ctx.answers.resultPayload as EligibilityResultPayload | undefined;
       if (payload?.segmentNotSupported) return "Business Loan isn't available for salaried applicants — it's only for business owners and self-employed professionals.";
       if (payload?.entityNotSupported) return "We don't have a journey for entities yet — this product is currently only available for individuals, partnerships/LLPs, and companies.";
+      if (payload?.underageNotSupported) return "We're unable to proceed — applicants must be at least 18 years old for this product.";
       const name = (ctx.answers.name as string | undefined)?.split(' ')[0];
       const greeting = name ? `All done, ${name} — your business loan application is in.` : 'All done — your business loan application is in.';
       if (!payload?.leadCreated) return greeting;
@@ -649,6 +663,21 @@ export const businessLoanSteps: StepDefinition[] = [
     },
     input: () => ({ type: 'none' }),
     onAnswer: (_parsed, ctx): { resultPayload: EligibilityResultPayload; applicationSubmitted?: boolean } => {
+      if (ctx.answers.blBlocked === 'underage') {
+        return {
+          resultPayload: {
+            eligible: false,
+            underageNotSupported: true,
+            name: ctx.answers.name as string | undefined,
+            product: 'Business Loan',
+            loanType: 'Business Loan',
+            segment: ctx.answers.segment as EligibilityResultPayload['segment'],
+            creditScore: ctx.answers.creditScore as number | undefined,
+            rm: (ctx.answers.blLeadRm as { name: string; phone: string; email: string } | undefined) ?? { name: 'Our team', phone: '', email: '' },
+            leadCreated: false,
+          },
+        };
+      }
       if (isSalariedSegment(ctx) || !isSupportedBusinessEntity(ctx)) {
         return {
           resultPayload: {

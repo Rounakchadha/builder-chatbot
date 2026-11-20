@@ -6,6 +6,8 @@ import { maskMobile, maskPan } from '../lib/crypto';
 import { mockOffersForAmount } from './mockOffers';
 import { ensureLeadOnce, type LeadSyncResult } from '../services/lead.service';
 import { sendLeadCreatedWebhook } from '../services/webhook.service';
+import { findMissingMandatoryFields, logMissingMandatoryFields } from '../services/mandatoryFields.service';
+import { calcAge, MIN_APPLICANT_AGE_YEARS } from './homeLoan';
 
 /** A recap of everything collected, shown once right before the final result (lead id + RM) —
  * same spirit as homeLoan.ts's buildProfileSummary. */
@@ -74,7 +76,22 @@ export const goldLoanSteps: StepDefinition[] = [
     isApplicable: isGoldLoan,
     botMessage: () => null,
     input: () => ({ type: 'none' }),
-    onAnswer: async (_parsed, ctx): Promise<{ glLeadResult: LeadSyncResult }> => {
+    onAnswer: async (_parsed, ctx) => {
+      // Age gate (2026-11-17 instruction: "in gold loan... we can calculate the age from the dob...
+      // we need that in those as well") — checked right here, the earliest point a real lead would
+      // otherwise be created for Gold Loan (the moment the product is picked, before amount/
+      // gold-type/etc. are even asked). A blocked customer still walks through the rest of this
+      // product's own questions (harmless — no real lead exists yet to attach them to) but
+      // glResult below short-circuits to the right "can't proceed" message instead of a normal
+      // eligible result.
+      const a = ctx.answers;
+      if (a.dob && calcAge(a.dob as string) < MIN_APPLICANT_AGE_YEARS) {
+        return { glBlocked: 'underage' as const };
+      }
+      // Mandatory-fields diagnostic (2026-11-17, see homeLoan.ts's computeResultPayload for the
+      // full "ask, don't block" reasoning) — log-only, should be unreachable in practice.
+      const missing = findMissingMandatoryFields(a);
+      if (missing.length > 0) logMissingMandatoryFields(ctx.conversationId, 'Gold Loan', missing);
       const glLeadResult = await ensureLeadOnce({
         conversationId: ctx.conversationId,
         rawPan: ctx.answers.pan as string,
@@ -189,11 +206,27 @@ export const goldLoanSteps: StepDefinition[] = [
     isApplicable: isGoldLoan,
     botMessage: (ctx) => {
       const payload = ctx.answers.resultPayload as EligibilityResultPayload | undefined;
+      if (payload?.underageNotSupported) return "We're unable to proceed — applicants must be at least 18 years old for this product.";
       if (!payload?.eligible) return 'All done.';
       return "Here's what you're eligible for with Muthoot Finance — tap below to submit your application.";
     },
     input: () => ({ type: 'none' }),
     onAnswer: (_parsed, ctx): { resultPayload: EligibilityResultPayload } => {
+      if (ctx.answers.glBlocked === 'underage') {
+        return {
+          resultPayload: {
+            eligible: false,
+            underageNotSupported: true,
+            name: ctx.answers.name as string | undefined,
+            product: 'Gold Loan',
+            loanType: 'Gold Loan',
+            segment: ctx.answers.segment as EligibilityResultPayload['segment'],
+            creditScore: ctx.answers.creditScore as number | undefined,
+            rm: { name: 'Our team', phone: '', email: '' },
+            leadCreated: false,
+          },
+        };
+      }
       // Fixed cap instead of the old weight x purity x LTV estimate (2026-11-02 direct instruction:
       // "muthooth mein dont caluclate estimate just say upto 5 lakhs") — Muthoot's real eligibility
       // depends entirely on their own physical gold verification anyway, so a precise-looking

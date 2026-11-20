@@ -11,6 +11,18 @@ const PRODUCT_LABEL_MAP: Record<string, string> = {
   'Loan Against Shares': 'Loan Against Securities',
 };
 
+// Agreed with Sai (CIS, 2026-11-16 WhatsApp) — CIS wants a "Client type" field for their CRM with
+// options Business Promoter/Salaried/Professional/NRI/Others, but we only ever collect `segment`
+// (Salaried/Business owner/Self-employed professional — the valid flags our own APIs use; NRI/
+// Others are never asked and never will be). Resolution: map our existing segment onto CIS's own
+// labels here, rather than adding a new question neither side actually needs. Sent as `client_type`
+// in the payload below — told to Sai 2026-11-17, his team updates their webhook handler for it.
+const CLIENT_TYPE_MAP: Record<string, string> = {
+  'Business owner': 'Business Promoter',
+  Salaried: 'Salaried',
+  'Self-employed professional': 'Professional',
+};
+
 export interface LeadCreatedWebhookInput {
   leadId: string;
   name?: string;
@@ -69,6 +81,7 @@ export async function sendLeadCreatedWebhook(input: LeadCreatedWebhookInput): Pr
     loan_type: input.loanType,
     requested_amount: input.loanAmount ?? 0,
     employment_type: input.segment ?? '',
+    client_type: (input.segment && CLIENT_TYPE_MAP[input.segment]) ?? '',
     monthly_income: input.monthlyIncome ?? 0,
     city: city ?? '',
     pincode: input.pincode ?? '',
@@ -93,11 +106,19 @@ export async function sendLeadCreatedWebhook(input: LeadCreatedWebhookInput): Pr
       body: json,
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
+    // Bug fixed 2026-11-16: neither branch below used to log the response BODY at all — only the
+    // status code, and only on a non-2xx. A real case showed this gap directly: CIS's server
+    // returned 200 (so this logged "sent", looking fully successful) but never actually created a
+    // lead on their end — with no body logged, there was nothing to hand back to them to debug
+    // what their own server actually said. Capped at 2000 chars so a misbehaving endpoint returning
+    // something huge (an error page, a stack trace) can't blow up the log line.
+    const responseBody = await res.text().catch(() => '<failed to read response body>');
+    const truncatedBody = responseBody.length > 2000 ? `${responseBody.slice(0, 2000)}…` : responseBody;
     if (!res.ok) {
-      logger.warn({ event: 'cis_webhook_non_2xx', status: res.status, leadId: input.leadId }, 'CIS webhook returned a non-2xx status');
+      logger.warn({ event: 'cis_webhook_non_2xx', status: res.status, leadId: input.leadId, responseBody: truncatedBody }, 'CIS webhook returned a non-2xx status');
       return;
     }
-    logger.info({ event: 'cis_webhook_sent', leadId: input.leadId, product: input.product }, 'CIS lead-created webhook sent');
+    logger.info({ event: 'cis_webhook_sent', leadId: input.leadId, product: input.product, status: res.status, responseBody: truncatedBody }, 'CIS lead-created webhook sent');
   } catch (err) {
     logger.error({ err, event: 'cis_webhook_failed', leadId: input.leadId }, 'CIS webhook POST failed — not retried, does not affect the customer\'s own journey');
   }

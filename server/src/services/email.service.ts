@@ -23,6 +23,10 @@ export interface RmSummaryInput {
   product: string;
   loanType?: string;
   leadId?: string;
+  /** Set only when this lead came in through the SDK launch-token path (see routes/chat.ts's
+   * ctxAnswers.leadSource) — e.g. "CIS", the one partner using it today. Unset for a direct widget
+   * visit with no partner launch token at all. */
+  source?: string;
   // CIBIL score is deliberately never sent to the RM (2026-10-21 direct instruction) — removed
   // entirely rather than just left blank, so a future field added above doesn't accidentally end
   // up next to a half-finished "why is this missing" comment.
@@ -91,6 +95,7 @@ function buildHtml(input: RmSummaryInput): string {
   row('Product', input.product);
   row('Loan type', input.loanType);
   row('Lead ID', input.leadId);
+  row('Source', input.source);
   for (const detail of input.productDetails ?? []) row(detail.label, detail.value);
 
   const firstName = input.customerName?.split(' ')[0];

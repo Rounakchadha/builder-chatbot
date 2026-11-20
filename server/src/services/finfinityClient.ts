@@ -155,7 +155,12 @@ async function requestOnce<T>(method: 'GET' | 'POST', path: string, body: unknow
     // no idea what actually went wrong or that starting over would fix it. This at least tells them
     // the truth instead of a blank "something went wrong."
     const message = res.status === 401 ? 'Your session needs to be refreshed — please restart your application.' : detail || envelope.error_msg || `Finfinity API error (HTTP ${res.status})`;
-    logger.warn({ event: 'finfinity_api_http_error', path, attempt, httpStatus: res.status, detail, durationMs: Date.now() - startedAt }, 'Finfinity API returned a non-2xx status');
+    // Bug fixed 2026-11-16: this only ever logged the generic DRF `detail` field — Bitsflow's own
+    // envelope shape (error_msg/error_code, e.g. "OTP_EXPIRED") was never captured here at all, so
+    // a real non-2xx failure (like a customer's OTP attempt) left nothing in the logs to say WHY it
+    // failed, only the bare HTTP status. Same gap as the CIS webhook's response-body logging, fixed
+    // the same day for the same reason — found while trying to debug a real "incorrect OTP" report.
+    logger.warn({ event: 'finfinity_api_http_error', path, attempt, httpStatus: res.status, detail, errorMsg: envelope.error_msg, errorCode: envelope.error_code, durationMs: Date.now() - startedAt }, 'Finfinity API returned a non-2xx status');
     return throwTracked(path, message, envelope.error_code || `HTTP_${res.status}`, redactDetail(envelope.error_dtl));
   }
 

@@ -74,8 +74,9 @@ export interface BureauPull {
   refreshToken?: string;
 }
 
-/** The real bureau check is NOT a single request/response like the mock — /generatebureau starts
- * it and comes back with either a CIBIL knowledge-based question (pick the right answer from
+/** The real bureau check is NOT a single request/response like the mock — generateBureau() (see
+ * its own doc comment for which endpoint it actually calls, which changed 2026-11-17) starts it
+ * and comes back with either a CIBIL knowledge-based question (pick the right answer from
  * `error_msg`/the CIBIL bureau's own options) or an Experian mobile OTP, and only /validatebureau
  * (with that question answered, or the OTP entered) actually returns a score. That's a real,
  * interactive conversation turn — it doesn't fit BureauService.pull()'s "one call, get a score
@@ -117,21 +118,28 @@ export const realBureauApi: RealBureauApi = {
   // retrying either blind after a timeout risks starting a duplicate session or burning a real
   // attempt for an answer that might have already gone through.
   async generateBureau(input) {
+    // Switched from /leadflow/generatebureau to /leadflow/updatebureau (2026-11-17) — confirmed
+    // live against prod that generatebureau fails on EVERY call with "No bureau configured for
+    // tenant" (INVALID_404), while updatebureau starts the exact same CIBIL question/OTP or
+    // Experian OTP session successfully (same response shape, consumed by the same
+    // /leadflow/validatebureau below — no change needed there). updatebureau's own request shape
+    // differs slightly: `email` (not `official_email`) and `campaign_code` (not `pincode` — not
+    // needed by this endpoint at all, so `input.pincode` is accepted but intentionally unused here).
     return finfinityClient
       .post<GenerateBureauResponse[]>(
-        '/leadflow/generatebureau',
+        '/leadflow/updatebureau',
         {
           pan: input.pan,
           phone_number: input.phoneNumber,
-          official_email: input.officialEmail,
-          pincode: input.pincode,
+          email: input.officialEmail,
+          campaign_code: env.FINFINITY_CAMPAIGN_CODE,
           applicant_type_key: input.applicantTypeKey,
         },
         { token: input.token, retryOnTransient: false },
       )
       .then((results) => {
         const result = results[0];
-        if (!result) throw new Error('generatebureau returned no data');
+        if (!result) throw new Error('updatebureau returned no data');
         return result;
       });
   },

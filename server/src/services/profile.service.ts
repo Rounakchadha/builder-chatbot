@@ -25,6 +25,9 @@ export interface RememberedProfile {
   bureauSource?: 'bureau' | 'experian';
   pincode?: string;
   income?: number;
+  /** Existing loan EMIs, shared the same way `income` is — can legitimately be 0 (customer said
+   * "no"), so every read/write of this field uses `!== undefined`, never a plain falsy check. */
+  emi?: number;
   pan?: string;
   fullName?: string;
   dob?: string;
@@ -45,7 +48,7 @@ function profileKey(mobile: string): string {
 // encrypt/decrypt wrapper since it's real, non-rotatable PII — every other place it touches
 // storage (session.service.ts's ENCRYPT_KEYS, customer.service.ts's panEncrypted) already encrypts
 // it at rest, and this cache shouldn't be the one exception.
-const PROFILE_FIELDS = ['finfinityAccessToken', 'finfinityRefreshToken', 'remoteCustomerId', 'creditScore', 'bureauSource', 'pincode', 'income', 'pan', 'fullName', 'dob', 'gender', 'panDuplicateChecked'] as const;
+const PROFILE_FIELDS = ['finfinityAccessToken', 'finfinityRefreshToken', 'remoteCustomerId', 'creditScore', 'bureauSource', 'pincode', 'income', 'emi', 'pan', 'fullName', 'dob', 'gender', 'panDuplicateChecked'] as const;
 
 /** Fire-and-forget from every call site — never let a profile-cache write block or fail a
  * customer's actual turn. Only ever called with the fields that just became known, so a partial
@@ -76,6 +79,7 @@ export async function recallProfile(mobile: string): Promise<RememberedProfile |
     bureauSource: raw.bureauSource as 'bureau' | 'experian' | undefined,
     pincode: raw.pincode,
     income: raw.income ? Number(raw.income) : undefined,
+    emi: raw.emi !== undefined ? Number(raw.emi) : undefined,
     pan: raw.pan ? decryptPii(raw.pan) : undefined,
     fullName: raw.fullName,
     dob: raw.dob,

@@ -46,7 +46,14 @@ export class ChatApi {
   }
 
   async selectOffer(sessionToken: string, lenderName: string): Promise<{ ok: boolean; error?: string; leadId?: string; rm?: { name: string; phone: string; email: string } }> {
-    return postJson(`${this.baseUrl}/api/chat/select-offer`, { sessionToken, lenderName });
+    // Bug fixed 2026-11-19 (real customer report: the server actually completed the selection
+    // successfully — 200 OK, real RM returned — a fraction of a second AFTER this call's own
+    // timeout fired, showing a false "couldn't select" error). Root cause: the underlying Finfinity
+    // call (setbrefinanceroffertenure) retries once on a transient failure, each attempt capped at
+    // the server's own 10s timeout — 10s + a ~1s pause + another 10s is a real, legitimate ~21s
+    // worst case, well past the generic 15s default every other call here uses. 25s gives that
+    // worst case real headroom without making a customer wait unreasonably long on the common case.
+    return postJson(`${this.baseUrl}/api/chat/select-offer`, { sessionToken, lenderName }, 25_000);
   }
 
   async resendOtp(sessionToken: string): Promise<{ ok: true } | { error: string; message?: string }> {

@@ -94,6 +94,10 @@ async function beginNewSession(ip: string, userAgent: string | undefined, identi
       if (prefill.name) ctxAnswers.prefilledName = prefill.name;
       if (prefill.product || prefill.mobile || prefill.email) ctxAnswers.intent = CHECK_ELIGIBILITY;
       prefillVerified = Boolean(prefill.verified);
+      // Flags every lead that came in through the SDK launch-token path (CIS is the only partner
+      // using it today) so the RM summary email can show where the lead originated — a lead with
+      // no launch token at all (e.g. a direct widget visit with no partner page) leaves this unset.
+      ctxAnswers.leadSource = 'CIS';
     }
   }
 
@@ -130,11 +134,21 @@ async function beginNewSession(ip: string, userAgent: string | undefined, identi
         // tab was open". Past RESUME_IDLE_MS since that, treat it exactly like an explicit "Start
         // over": forget the stale pointer and fall through to the normal fresh-session path below,
         // rather than resuming a chat the customer has effectively walked away from.
-        const conversationRow = await prisma.conversation.findUnique({
-          where: { id: existingState.conversationId },
-          select: { updatedAt: true },
-        });
-        const idleMs = conversationRow ? Date.now() - conversationRow.updatedAt.getTime() : Infinity;
+        // Bug fixed 2026-11-16 (direct instruction: "if the eligibility has been calculated and
+        // the customer has not started start over dont start it again automatically") — a result
+        // already shown (any product's own terminal step, checked by TYPE not the literal id
+        // 'result' — same convention render() already uses) means there is nothing left to walk
+        // through from scratch; idle time alone should never force a restart of a FINISHED check,
+        // only of one still mid-flight. The 10-minute idle-expiry below still applies to every
+        // in-progress session exactly as before.
+        const alreadyFinished = getStep(FLOW, existingState.currentStepId).type === 'result';
+        const conversationRow = alreadyFinished
+          ? null
+          : await prisma.conversation.findUnique({
+              where: { id: existingState.conversationId },
+              select: { updatedAt: true },
+            });
+        const idleMs = alreadyFinished ? 0 : conversationRow ? Date.now() - conversationRow.updatedAt.getTime() : Infinity;
         if (idleMs > RESUME_IDLE_MS) {
           await forgetProductSession(mobileForProfile, productForProfile);
         } else {
@@ -179,6 +193,10 @@ async function beginNewSession(ip: string, userAgent: string | undefined, identi
       // shared `income` field Home Loan/LAP use — both get pre-seeded from the same cached value
       // so income given on EITHER side skips the question on the other.
       if (profile.income !== undefined && ctxAnswers.plIncome === undefined) ctxAnswers.plIncome = profile.income;
+      // Same pattern for existing EMIs (2026-11-16 instruction) — can legitimately be 0 ("no"), so
+      // every check here is `=== undefined`, never a plain falsy check.
+      if (profile.emi !== undefined && ctxAnswers.emi === undefined) ctxAnswers.emi = profile.emi;
+      if (profile.emi !== undefined && ctxAnswers.plEmi === undefined) ctxAnswers.plEmi = profile.emi;
       if (profile.pan && !ctxAnswers.pan) ctxAnswers.pan = profile.pan;
       if (profile.fullName && !ctxAnswers.fullName) {
         ctxAnswers.fullName = profile.fullName;
@@ -334,6 +352,7 @@ async function maybeSendRmSummaryEmail(
     product,
     loanType: payload.loanType,
     leadId: payload.leadId,
+    source: ctx.answers.leadSource as string | undefined,
     productDetails,
   });
   if (sent) {

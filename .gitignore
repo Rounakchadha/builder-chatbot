@@ -23,3 +23,4 @@ server/dump.rdb
 # Real prod secrets/credentials — never commit this (deploy.sh also explicitly excludes it from
 # the UAT rsync, 2026-11-13 security-review finding).
 server/.env.prod
+api-fin/Finfinity_Chatbot_API_Playbook.pdf

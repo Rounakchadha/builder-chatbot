@@ -134,7 +134,7 @@ class RealEligibilityService implements EligibilityService {
         builder_name: '',
         corporate_name: '',
         bt_type: input.isBalanceTransfer ? 'BT' : '',
-        campaign_code: 'anacity',
+        campaign_code: env.FINFINITY_CAMPAIGN_CODE,
         filter: {},
         collateral_type: '',
         // Fixed 2026-11-02 (user report: self-employed Home Loan applicants were showing no

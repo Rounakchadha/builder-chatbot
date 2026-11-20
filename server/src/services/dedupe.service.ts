@@ -53,6 +53,15 @@ export interface CustomerUpdate {
   email?: string;
   pincode?: string;
   segment?: string; // our display string, e.g. "Salaried" — mapped to their applicant_type below
+  /** Added 2026-11-17 for the identity-backfill step (see homeLoan.ts) — a found customer whose
+   * searchcustomer response had no name/dob gets it backfilled via a PAN lookup, then pushed back
+   * here so the NEXT searchcustomer for them already has it. UNCONFIRMED field names on
+   * updatecustomerv3's own side — guessed to match searchcustomer's own response field names
+   * (`customer_name`/`dob`), never actually tested live. Flag to confirm with Bitsflow; if these
+   * guesses are wrong, updateCustomer's own try/catch at every call site means this just silently
+   * fails to sync rather than breaking anything — worth confirming, not urgent to fix blind. */
+  name?: string;
+  dob?: string;
 }
 
 /** An existing customer record found by PAN/email instead of by mobile — used to stop a
@@ -282,6 +291,8 @@ class RealDedupeService implements DedupeService {
     if (update.pincode) update_fields.service_pincode = update.pincode;
     const applicantType = mapSegmentToApplicantType(update.segment);
     if (applicantType) update_fields.applicant_type = applicantType;
+    if (update.name) update_fields.customer_name = update.name;
+    if (update.dob) update_fields.dob = update.dob;
 
     if (Object.keys(update_fields).length === 0) return; // nothing to sync
 

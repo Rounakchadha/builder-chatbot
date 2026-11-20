@@ -15,6 +15,7 @@ import { dedupeService, type DuplicateMatch } from '../services/dedupe.service';
 import { eligibilityService } from '../services/eligibility.service';
 import { homeLoanEligibilityService, mapSegmentToHlEmploymentType, mapPropertyTypeToHl, HL_LENDER_DISPLAY_NAME, type HlEligibilityFacts, type HlLenderEligibility } from '../services/homeLoanEligibility.service';
 import { lenderNamesMatch } from './personalLoan';
+import { findMissingMandatoryFields, logMissingMandatoryFields } from '../services/mandatoryFields.service';
 import { ensureLeadOnce, leadService, markLeadFinancialsSynced, PRODUCT_CODE } from '../services/lead.service';
 import { panService } from '../services/pan.service';
 import { pincodeService } from '../services/pincode.service';
@@ -77,7 +78,7 @@ function namesLooselyMatch(a: string, b: string): boolean {
 // Security-review finding, 2026-10-23: there was no minimum-age check anywhere for Home Loan/LAP —
 // the real DOB (from the PAN lookup) was only ever used to DISPLAY an age on the profile summary,
 // never to gate anything. 18 is the standard contracting-age floor for a lending product in India.
-const MIN_APPLICANT_AGE_YEARS = 18;
+export const MIN_APPLICANT_AGE_YEARS = 18;
 
 /** Business Loan isn't offered to a salaried customer at all (2026-10-17 instruction) — hidden
  * from the 'product' choices outright rather than offered and rejected deeper into its own flow
@@ -281,6 +282,7 @@ function buildProfileSummary(ctx: StepContext): string {
   if (a.segment) lines.push(`<strong>Employment:</strong> ${a.segment}`);
   if (a.pincode) lines.push(`<strong>Pincode:</strong> ${a.pincode}`);
   if (a.product) lines.push(`<strong>Product:</strong> ${a.product}${a.loanType ? ` — ${a.loanType}` : ''}`);
+  if (a.loanAmount) lines.push(`<strong>Loan amount requested:</strong> ₹${Number(a.loanAmount).toLocaleString('en-IN')}`);
   if (a.income) lines.push(`<strong>Monthly income:</strong> ₹${Number(a.income).toLocaleString('en-IN')}`);
   lines.push(`<strong>Existing EMIs:</strong> ${a.emi ? `₹${Number(a.emi).toLocaleString('en-IN')}/month` : 'None'}`);
   if (a.propertyType) lines.push(`<strong>Property type:</strong> ${a.propertyType}`);
@@ -631,6 +633,18 @@ export async function computeResultPayload(ctx: StepContext): Promise<Eligibilit
     };
   }
 
+  // Mandatory-fields diagnostic (2026-11-17 — originally blocked with "please start over" on a
+  // gap, then changed on direct instruction: "dont start over just ask that field that is missing
+  // and then proceed" — nameAsk/dobAsk above now ask directly for the two fields that never had a
+  // question of their own at all, which was the only realistic way this ever fired; every other
+  // field already has its own dedicated ask-if-missing step earlier in this flow). Log-only now —
+  // should be unreachable in practice, so a hit here means an upstream step's own guard has a real
+  // bug, worth knowing about even though nothing blocks on it anymore.
+  if (isHomeLoanOrLap(a) && isIndividualPan(pan)) {
+    const missing = findMissingMandatoryFields(a);
+    if (missing.length > 0) logMissingMandatoryFields(ctx.conversationId, a.product as string, missing);
+  }
+
   // Security-review finding, 2026-10-23: no age gate existed at all — see MIN_APPLICANT_AGE_YEARS's
   // own comment above. Checked here, before ensureLead below ever creates a real lead, so an
   // underage applicant's PAN never reaches Finfinity as a loan applicant in the first place.
@@ -682,6 +696,7 @@ export async function computeResultPayload(ctx: StepContext): Promise<Eligibilit
         pincode: a.pincode as string | undefined,
         city: a.pincodeArea as string | undefined,
         monthlyIncome: Number(a.income) || undefined,
+        loanAmount: Number(a.loanAmount) || undefined,
       });
     }
   }
@@ -994,7 +1009,38 @@ export const homeLoanFlow: FlowDefinition = {
       },
     },
 
-    // ---------- found branch ----------
+    // ---------- found branch: silent identity backfill (2026-11-17 instruction: "we never go
+    // ahead with half info" — searchcustomer sometimes comes back with no name/dob at all for a
+    // found customer, and nothing used to catch that; the not-found branch's own panFetch step
+    // never runs here since it's gated to dedupeFound === false). Runs automatically, no visible
+    // bot message (same "invisible apiFetch" convention as triggerOtpDedupe/panFetch above) — the
+    // customer never sees this happen; it either fills the gap or the final mandatory-fields guard
+    // (see result step below) catches it if the PAN lookup itself doesn't have it either. ----------
+    {
+      id: 'profileFoundIdentityBackfill',
+      type: 'apiFetch',
+      progressLabel: 'About you',
+      isApplicable: (ctx) => ctx.answers.dedupeFound === true && !ctx.answers.identityBackfillAttempted && (!ctx.answers.name || !ctx.answers.dob),
+      botMessage: () => null,
+      input: () => ({ type: 'none' }),
+      onAnswer: async (_parsed, ctx) => {
+        const patch: Record<string, unknown> = { identityBackfillAttempted: true };
+        try {
+          const identity = await panService.lookup(ctx.answers.pan as string, ctx.answers.finfinityAccessToken as string | undefined);
+          if (!ctx.answers.name && identity.name) patch.name = identity.name;
+          if (!ctx.answers.dob && identity.dob) patch.dob = identity.dob;
+          if (!ctx.answers.gender && identity.gender) patch.gender = identity.gender;
+          if (patch.name || patch.dob) {
+            void dedupeService
+              .updateCustomer(ctx.answers.remoteCustomerId as number | undefined, { name: patch.name as string | undefined, dob: patch.dob as string | undefined }, ctx.answers.finfinityAccessToken as string | undefined)
+              .catch((err) => logger.error({ err, conversationId: ctx.conversationId }, 'identity backfill: updateCustomer sync failed — continuing without it'));
+          }
+        } catch (err) {
+          logger.error({ err, conversationId: ctx.conversationId }, 'identity backfill via PAN lookup failed — continuing with whatever is already known');
+        }
+        return patch;
+      },
+    },
     {
       id: 'profileFound',
       type: 'message',
@@ -1398,6 +1444,63 @@ export const homeLoanFlow: FlowDefinition = {
         validateChoice(ctx, 'segment', [...SEGMENTS], value, 'Are you salaried, a business owner, or a self-employed professional?', SEGMENT_HINTS),
       onAnswer: async (parsed, ctx) => {
         if (ctx.answers.customerId) await customerService.updateMissingField(ctx.answers.customerId as string, 'segment', parsed as string);
+      },
+    },
+    // ---------- Direct ask-if-still-missing fallbacks for name/dob (2026-11-17 instruction:
+    // "dont start over just ask that field that is missing and then proceed") — these are the only
+    // two mandatory identity fields that never had ANY question of their own anywhere in this
+    // flow: a found customer normally gets them from searchcustomer (backfilled via a PAN lookup
+    // by profileFoundIdentityBackfill above if that was missing it too), and a not-found customer
+    // always gets them from getpandetail/panFetch — so in the ordinary case both are already set
+    // by this point and these two steps are simply skipped. Placed here, after 'segment', since
+    // that's the point every other identity field (found or not-found) has already converged by. ----------
+    {
+      id: 'nameAsk',
+      type: 'text',
+      progressLabel: 'About you',
+      isApplicable: (ctx) => isEligibilityIntent(ctx.answers) && !ctx.answers.name,
+      botMessage: () => "What's your full name?",
+      input: () => ({ type: 'text', placeholder: 'Full name' }),
+      validate: (value) => {
+        const v = (value || '').trim();
+        if (v.length < 2) return { ok: false, error: 'Enter your full name.' };
+        return { ok: true, parsed: v };
+      },
+      onAnswer: async (parsed, ctx) => {
+        void dedupeService
+          .updateCustomer(ctx.answers.remoteCustomerId as number | undefined, { name: parsed as string }, ctx.answers.finfinityAccessToken as string | undefined)
+          .catch((err) => logger.error({ err, conversationId: ctx.conversationId }, 'nameAsk: updateCustomer sync failed — continuing without it'));
+        return { name: parsed, fullName: parsed };
+      },
+    },
+    {
+      id: 'dobAsk',
+      type: 'text',
+      progressLabel: 'About you',
+      isApplicable: (ctx) => isEligibilityIntent(ctx.answers) && !ctx.answers.dob,
+      botMessage: () => "What's your date of birth?",
+      hint: () => 'DD/MM/YYYY',
+      input: () => ({ type: 'text', placeholder: 'DD/MM/YYYY' }),
+      validate: (value) => {
+        const match = (value || '').trim().match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
+        if (!match) return { ok: false, error: 'Enter your date of birth as DD/MM/YYYY.' };
+        const [, d, m, y] = match;
+        const iso = new Date(Date.UTC(Number(y), Number(m) - 1, Number(d))).toISOString().slice(0, 10);
+        const parsedDate = new Date(iso);
+        // getUTCDate()/Month() round-trip check — catches e.g. 31/02/2000 (Date silently rolls it
+        // over to March), same class of bug ddmmyyyyToIso's own callers already have to watch for.
+        if (parsedDate.getUTCDate() !== Number(d) || parsedDate.getUTCMonth() !== Number(m) - 1 || parsedDate.getUTCFullYear() !== Number(y)) {
+          return { ok: false, error: "That doesn't look like a real date — enter your date of birth as DD/MM/YYYY." };
+        }
+        if (parsedDate.getTime() > Date.now()) return { ok: false, error: 'Date of birth cannot be in the future.' };
+        if (calcAge(iso) > 100) return { ok: false, error: "That doesn't look right — enter your actual date of birth." };
+        return { ok: true, parsed: iso };
+      },
+      onAnswer: async (parsed, ctx) => {
+        void dedupeService
+          .updateCustomer(ctx.answers.remoteCustomerId as number | undefined, { dob: parsed as string }, ctx.answers.finfinityAccessToken as string | undefined)
+          .catch((err) => logger.error({ err, conversationId: ctx.conversationId }, 'dobAsk: updateCustomer sync failed — continuing without it'));
+        return { dob: parsed };
       },
     },
     // A customer adopted via the PAN/email duplicate-match flow above never passes through
@@ -1824,6 +1927,28 @@ export const homeLoanFlow: FlowDefinition = {
         return validateChoice(ctx, 'loanType', options, value, `Which of these is it: ${options.join(', ')}?`);
       },
     },
+    // ---------- Requested loan amount (2026-11-19 instruction: Home Loan/LAP never asked this
+    // directly — the webhook to CIS was always sending `requested_amount: 0` for every Home Loan/
+    // LAP lead as a result, unlike every other product which does ask and pass this through). Not
+    // used for OUR OWN eligibility math at all (that's still purely income/property-driven, see
+    // the existing LTV cap logic below) — this is purely the customer's own stated ask, collected
+    // only so CIS's CRM has a real number instead of a flat zero. ----------
+    {
+      id: 'loanAmount',
+      type: 'number',
+      progressLabel: 'Financial details',
+      isApplicable: (ctx) => isEligibilityIntent(ctx.answers) && isHomeLoanOrLap(ctx.answers) && isIndividualPan(ctx.answers.pan as string | undefined) && !ctx.answers.loanAmount,
+      botMessage: () => 'How much loan amount do you need?',
+      input: () => ({ type: 'number', placeholder: 'e.g. 5000000, or 50 lakh' }),
+      validate: (value) => {
+        const v = parseAmount(value);
+        if (!v || v < 1_00_000) return { ok: false, error: 'Enter the loan amount you need — e.g. 5000000.' };
+        // Sanity floor, not a business rule — same spirit as businessLoan.ts's own 50-crore cap,
+        // just for Home Loan's own typically-larger ticket sizes.
+        if (v > 50_00_00_000) return { ok: false, error: "That doesn't look right — enter the loan amount you need (up to ₹50 crore)." };
+        return { ok: true, parsed: v };
+      },
+    },
     {
       id: 'income',
       type: 'number',
@@ -1856,7 +1981,12 @@ export const homeLoanFlow: FlowDefinition = {
       id: 'emi',
       type: 'number',
       progressLabel: 'Financial details',
-      isApplicable: (ctx) => isEligibilityIntent(ctx.answers) && isHomeLoanOrLap(ctx.answers) && isIndividualPan(ctx.answers.pan as string | undefined),
+      // ctx.answers.emi === undefined (not a plain !ctx.answers.emi check — 0 is a legitimate,
+      // common answer here, "no existing EMIs") — lets an EMI already given for a DIFFERENT
+      // product (Personal Loan's own plEmi step shares this cache — see profile.service.ts) in the
+      // last 10 minutes skip straight past this, same class of fix as the `income` step above.
+      isApplicable: (ctx) =>
+        isEligibilityIntent(ctx.answers) && isHomeLoanOrLap(ctx.answers) && isIndividualPan(ctx.answers.pan as string | undefined) && ctx.answers.emi === undefined,
       botMessage: () => 'Do you currently have any other loan EMIs?',
       hint: (ctx) => (isBT(ctx.answers) ? "Don't include the loan you're transferring." : 'Say "no" if you don\'t have any.'),
       input: () => ({ type: 'number', placeholder: "e.g. 12000, or 'no'" }),
@@ -1866,6 +1996,9 @@ export const homeLoanFlow: FlowDefinition = {
         const income = Number(ctx.answers.income);
         if (income && v > income) return { ok: false, error: 'Your EMI cannot be more than your income.' };
         return { ok: true, parsed: v };
+      },
+      onAnswer: async (parsed, ctx) => {
+        void rememberProfile(ctx.answers.mobile as string, { emi: parsed as number });
       },
     },
     {

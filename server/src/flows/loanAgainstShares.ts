@@ -14,6 +14,8 @@ import { maskMobile, maskPan } from '../lib/crypto';
 import { leadCreatedMessage, pickRm } from './rm';
 import { ensureLeadOnce, type LeadSyncResult } from '../services/lead.service';
 import { sendLeadCreatedWebhook } from '../services/webhook.service';
+import { findMissingMandatoryFields, logMissingMandatoryFields } from '../services/mandatoryFields.service';
+import { calcAge, MIN_APPLICANT_AGE_YEARS } from './homeLoan';
 
 /**
  * Loan Against Securities (shares / mutual funds) — branches off homeLoan.ts's 'product' step,
@@ -168,7 +170,17 @@ export const loanAgainstSharesSteps: StepDefinition[] = [
     isApplicable: isLAS,
     botMessage: () => null,
     input: () => ({ type: 'none' }),
-    onAnswer: async (_parsed, ctx): Promise<{ lasLeadResult: LeadSyncResult }> => {
+    onAnswer: async (_parsed, ctx) => {
+      // Age gate (2026-11-17 instruction — same as goldLoan.ts's own copy, see its comment for the
+      // full reasoning) — checked right before the real lead below.
+      const a = ctx.answers;
+      if (a.dob && calcAge(a.dob as string) < MIN_APPLICANT_AGE_YEARS) {
+        return { lasBlocked: 'underage' as const };
+      }
+      // Mandatory-fields diagnostic (2026-11-17, see homeLoan.ts's computeResultPayload for the
+      // full "ask, don't block" reasoning) — log-only, should be unreachable in practice.
+      const missing = findMissingMandatoryFields(a);
+      if (missing.length > 0) logMissingMandatoryFields(ctx.conversationId, 'Loan Against Securities', missing);
       const lasLeadResult = await ensureLeadOnce({
         conversationId: ctx.conversationId,
         rawPan: ctx.answers.pan as string,
@@ -210,11 +222,28 @@ export const loanAgainstSharesSteps: StepDefinition[] = [
     isApplicable: isLAS,
     botMessage: (ctx) => {
       const payload = ctx.answers.resultPayload as EligibilityResultPayload | undefined;
+      if (payload?.underageNotSupported) return "We're unable to proceed — applicants must be at least 18 years old for this product.";
       if (!payload?.leadCreated) return 'All done.';
       return leadCreatedMessage(payload.leadId, payload.rm);
     },
     input: () => ({ type: 'none' }),
     onAnswer: (_parsed, ctx): { resultPayload: EligibilityResultPayload; applicationSubmitted?: boolean } => {
+      if (ctx.answers.lasBlocked === 'underage') {
+        const seedKeyBlocked = (ctx.answers.mobile as string) || ctx.conversationId;
+        return {
+          resultPayload: {
+            eligible: false,
+            underageNotSupported: true,
+            name: ctx.answers.name as string | undefined,
+            product: 'Loan Against Securities',
+            loanType: ctx.answers.lasType as string,
+            segment: ctx.answers.segment as EligibilityResultPayload['segment'],
+            creditScore: ctx.answers.creditScore as number | undefined,
+            rm: pickRm(seedKeyBlocked),
+            leadCreated: false,
+          },
+        };
+      }
       const lead = ctx.answers.lasLeadResult as LeadSyncResult;
       const seedKey = (ctx.answers.mobile as string) || ctx.conversationId;
       // No eligibility/offers at all for this product (direct instruction) — just a lead. Falls

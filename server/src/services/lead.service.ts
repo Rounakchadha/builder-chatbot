@@ -99,6 +99,24 @@ function mapLoanType(loanType: string): string {
   return 'fresh'; // 'Fresh purchase' or 'Property purchase'
 }
 
+// Bug fixed 2026-11-19 (live failure: real customer hit updatelead's INVALID_PROPERTY_TYPE for
+// "plot purchase" on UAT, silently dropping their income/EMI sync — same class of bug as
+// mapLoanType above, confirmed live 2026-10-21 but the fix was never actually applied to this
+// call site, only documented). A plain `.toLowerCase()` matches 2 of Home Loan's 4 options
+// ("Row house"/"Bungalow") but not the other 2 — confirmed live: "apartment" and "plot purchase"
+// are both rejected outright with INVALID_PROPERTY_TYPE; the real values are "apartment/flat" and
+// "plot". LAP's own three options (Residential/Commercial/Industrial) are unaffected by this —
+// their lowercased form already works and isn't touched here.
+const PROPERTY_TYPE_OVERRIDES: Record<string, string> = {
+  apartment: 'apartment/flat',
+  'plot purchase': 'plot',
+};
+function mapPropertyType(propertyType: string | undefined): string {
+  if (!propertyType) return '';
+  const lower = propertyType.toLowerCase();
+  return PROPERTY_TYPE_OVERRIDES[lower] ?? lower;
+}
+
 /** Our display strings -> the real backend's product codes for create_anacity_lead. 'GL'/'PL'/'BL'
  * confirmed live against UAT (2026-10-16) — same call, same real RM-in-response behavior as HL/LAP,
  * now the MAIN lead-creation path for every product (superseding createcorplead, which never
@@ -192,7 +210,7 @@ class RealLeadService implements LeadService {
         rental_income: 0, // not collected in chat
         existing_emi: financials.emi,
         property_identified: financials.propertyIdentified ? 'Yes' : 'No',
-        property_type: financials.propertyType?.toLowerCase() ?? '',
+        property_type: mapPropertyType(financials.propertyType),
         occupancy_type: financials.occupancy?.toLowerCase().replace(/[^a-z]+/g, '_'),
         // Was a plain .toLowerCase() with no separator normalization, unlike occupancy_type right
         // above it — broke any multi-word option (e.g. "School/College" -> "school/college",

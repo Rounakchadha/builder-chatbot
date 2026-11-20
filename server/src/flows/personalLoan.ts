@@ -6,7 +6,8 @@ import { validateChoice } from '../lib/validateChoice';
 import { isKnownEmployer } from '../services/employer.service';
 import { mapSegmentToEmploymentType, LENDER_DISPLAY_NAME, personalLoanEligibilityService, type PlEligibilityFacts } from '../services/personalLoanEligibility.service';
 import { personalLoanFinancerService, type PlFinancerLenderEntry, type PlLenderComparisonResult } from '../services/personalLoanFinancer.service';
-import { calcAge } from './homeLoan';
+import { calcAge, MIN_APPLICANT_AGE_YEARS } from './homeLoan';
+import { findMissingMandatoryFields, logMissingMandatoryFields } from '../services/mandatoryFields.service';
 import { pickRm } from './rm';
 import { ensureLeadOnce, type LeadSyncResult } from '../services/lead.service';
 import { sendLeadCreatedWebhook } from '../services/webhook.service';
@@ -321,7 +322,11 @@ export const personalLoanSteps: StepDefinition[] = [
     id: 'plEmi',
     type: 'number',
     progressLabel: 'Personal Loan',
-    isApplicable: (ctx) => isPersonalLoan(ctx) && !isNonSalariedSegment(ctx),
+    // ctx.answers.plEmi === undefined (not a plain !ctx.answers.plEmi check — 0 is a legitimate,
+    // common answer here, "no existing EMIs") — lets an EMI already given for a DIFFERENT product
+    // (Home Loan/LAP's own `emi` step shares this cache — see profile.service.ts) in the last 10
+    // minutes skip straight past this, same class of fix as this file's own plIncome step.
+    isApplicable: (ctx) => isPersonalLoan(ctx) && !isNonSalariedSegment(ctx) && ctx.answers.plEmi === undefined,
     botMessage: () => 'Do you currently have any other loan EMIs?',
     hint: () => 'Say "no" if you don\'t have any.',
     input: () => ({ type: 'number', placeholder: "e.g. 8000, or 'no'" }),
@@ -330,6 +335,11 @@ export const personalLoanSteps: StepDefinition[] = [
       if (v === null || v < 0) return { ok: false, error: "Enter the amount, or say 'no' if you don't have any." };
       if (v > MAX_SANE_MONTHLY_AMOUNT) return { ok: false, error: `That doesn't look right — enter your EMI amount (up to ₹${MAX_SANE_MONTHLY_AMOUNT.toLocaleString('en-IN')}).` };
       return { ok: true, parsed: v };
+    },
+    onAnswer: async (parsed, ctx) => {
+      // Shares the SAME cached value as Home Loan/LAP's own `emi` field (not a separate plEmi
+      // cache) — answering it on EITHER side skips the question on the other.
+      void rememberProfile(ctx.answers.mobile as string, { emi: parsed as number });
     },
   },
   {
@@ -373,7 +383,19 @@ export const personalLoanSteps: StepDefinition[] = [
     isApplicable: (ctx) => isPersonalLoan(ctx) && !isNonSalariedSegment(ctx) && env.PL_REAL_FINANCER_CHAIN_ENABLED && !ctx.answers.plLeadResult,
     botMessage: () => null,
     input: () => ({ type: 'none' }),
-    onAnswer: async (_parsed, ctx): Promise<{ plLeadResult: LeadSyncResult }> => {
+    onAnswer: async (_parsed, ctx) => {
+      // Age gate (2026-11-17 instruction — same as goldLoan.ts's own copy, see its comment for the
+      // full reasoning) — checked before the real lead below. plOffers right after also checks
+      // `plBlocked` before ever calling the real financer chain, so a blocked customer here never
+      // reaches a call that needs a lead id this step intentionally never created.
+      const a = ctx.answers;
+      if (a.dob && calcAge(a.dob as string) < MIN_APPLICANT_AGE_YEARS) {
+        return { plBlocked: 'underage' as const };
+      }
+      // Mandatory-fields diagnostic (2026-11-17, see homeLoan.ts's computeResultPayload for the
+      // full "ask, don't block" reasoning) — log-only, should be unreachable in practice.
+      const missing = findMissingMandatoryFields(a);
+      if (missing.length > 0) logMissingMandatoryFields(ctx.conversationId, 'Personal Loan', missing);
       const plLeadResult = await ensureLeadOnce({
         conversationId: ctx.conversationId,
         rawPan: ctx.answers.pan as string,
@@ -402,6 +424,20 @@ export const personalLoanSteps: StepDefinition[] = [
     },
     input: () => ({ type: 'none' }),
     onAnswer: async (_parsed, ctx) => {
+      // Guard already tripped by plCreateLeadEarly above (early-financer-chain path) — never call
+      // the real financer chain (it needs a lead id that step deliberately never created) or the
+      // pre-check path either; just report no offers, same "half info means no eligibility" rule
+      // as every other product. Covers the DEFAULT (financer chain off) path too — this is the
+      // only lead-creation-adjacent point that path reaches before plCreateLead further down,
+      // whose own isApplicable already requires plOffers to be non-empty, so returning none here
+      // naturally skips it without needing its own separate guard check.
+      if (ctx.answers.plBlocked === 'underage') return { plOffers: [] };
+      const a = ctx.answers;
+      if (!env.PL_REAL_FINANCER_CHAIN_ENABLED) {
+        if (a.dob && calcAge(a.dob as string) < MIN_APPLICANT_AGE_YEARS) return { plBlocked: 'underage' as const, plOffers: [] };
+        const missing = findMissingMandatoryFields(a);
+        if (missing.length > 0) logMissingMandatoryFields(ctx.conversationId, 'Personal Loan', missing);
+      }
       // Real financer chain (2026-10-21 — switched ON as the active path; see plCreateLeadEarly
       // above, which guarantees a lead already exists here when this is on) — ONE call covers every
       // lender, replacing the pre-check microservice's one-call-per-lender loop as what the customer
@@ -468,6 +504,7 @@ export const personalLoanSteps: StepDefinition[] = [
     botMessage: (ctx) => {
       const payload = ctx.answers.resultPayload as EligibilityResultPayload | undefined;
       if (payload?.segmentNotSupported) return "Personal Loan isn't available for business owners or self-employed professionals — it's only for salaried applicants.";
+      if (payload?.underageNotSupported) return "We're unable to proceed — applicants must be at least 18 years old for this product.";
       if (!payload?.eligible) return 'All done.';
       return 'Pick an offer below to proceed.';
     },
@@ -493,6 +530,7 @@ export const personalLoanSteps: StepDefinition[] = [
       const seedKey = (ctx.answers.pan as string) || (ctx.answers.mobile as string) || ctx.conversationId;
       const resultPayload: EligibilityResultPayload = {
         eligible: offers.length > 0,
+        underageNotSupported: ctx.answers.plBlocked === 'underage' ? true : undefined,
         name: ctx.answers.name as string | undefined,
         product: 'Personal Loan',
         loanType: 'Personal Loan',
