@@ -69,7 +69,13 @@ async function throwTracked(path: string, message: string, code: string, detail:
 // "CIBIL_QUESTION_QUEUE" (the question itself IS the successful next step, not a failure). Every
 // other documented error_code corresponds to an actual failure — "empty string means success" is
 // not a reliable rule for this API, so this is an explicit allowlist rather than a heuristic.
-const SUCCESS_FLAVORED_ERROR_CODES = new Set(['CUST_NOT_EXIST', 'CIBIL_QUESTION_QUEUE']);
+// Bug fixed 2026-11-22 (real prod customer, first real bureau pull ever run on prod): updatebureau
+// — the endpoint we actually call now, not generatebureau — returns this exact SAME kind of
+// success-flavored envelope, but under a DIFFERENT code than assumed here: "OTP_IDM_Email_Queue",
+// not "CIBIL_QUESTION_QUEUE". The question/OTP challenge data was right there in the response (same
+// as the CIBIL_QUESTION_QUEUE case), but this threw anyway since that exact string was never in the
+// allowlist — blocking the bureau step outright with a generic "trouble reaching services" error.
+const SUCCESS_FLAVORED_ERROR_CODES = new Set(['CUST_NOT_EXIST', 'CIBIL_QUESTION_QUEUE', 'OTP_IDM_Email_Queue']);
 
 // A hung real API call must never hang the whole conversation turn — 10s is generous enough for
 // any of these endpoints while still failing fast enough that the customer gets a "try again"
