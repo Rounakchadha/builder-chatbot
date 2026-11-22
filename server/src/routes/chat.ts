@@ -10,6 +10,8 @@ import { buildBusinessLoanRmDetails } from '../flows/businessLoan';
 import { EDITABLE_FIELDS, isEditableField, isFieldEditableNow, PROFILE_FIELDS } from '../flows/editableFields';
 import { createSession, loadSession, persistAnswer, advanceCurrentStep, saveSession, logMessage, type SessionState } from '../services/session.service';
 import { smsService } from '../services/sms.service';
+import { realBureauApi } from '../services/bureau.service';
+import { mapSegmentToHlEmploymentType } from '../services/homeLoanEligibility.service';
 import { FinfinityApiError } from '../services/finfinityClient';
 import { goldLeadService, sandboxGoldLeadService } from '../services/goldLoan.service';
 import { isSandboxPan, isSandboxMobile } from '../config/sandbox';
@@ -402,7 +404,15 @@ async function render(stepId: string, sessionToken: string, ctx: StepContext, er
   return response;
 }
 
-const OTP_STEP_IDS = ['otpDedupe', 'otpBureauFound', 'otpBureauNotFound', 'otpPanDuplicateVerify', 'otpEmailDuplicateVerify'];
+const OTP_STEP_IDS = ['otpDedupe', 'otpBureauFound', 'otpBureauNotFound', 'otpPanDuplicateVerify', 'otpEmailDuplicateVerify', 'otpBureauRealFound'];
+
+// Bug fixed 2026-11-22 (real prod customer, first real bureau pull ever run: the CIBIL OTP never
+// arrived and there was no way to ask for a new one) — every OTP step above gets its code from our
+// own smsService.sendOtp (a simple mobile-number resend), but the REAL bureau consent step's OTP
+// comes from a completely different call (updatebureau, via a fresh generateBureau()) that returns
+// a NEW otp_session_id/questionKey/answerKey/ChallengeConfigGUID each time — the old ones from the
+// original triggerBureauRealFound call become stale and must be replaced, not just re-sent.
+const REAL_BUREAU_OTP_STEP_ID = 'otpBureauRealFound';
 
 /** A step's onAnswer throwing here almost always means an external call failed (a real bank API
  * timing out, erroring, or being unreachable) — never something the customer did wrong. Shown as
@@ -652,7 +662,38 @@ export async function chatRoutes(app: FastifyInstance) {
     if (!claimed) return reply.code(429).send({ error: 'resend_too_soon', message: 'Please wait a bit before requesting another OTP.' });
 
     try {
-      await smsService.sendOtp(state.conversationId, state.answers.mobile as string);
+      if (state.currentStepId === REAL_BUREAU_OTP_STEP_ID) {
+        // Re-runs the exact same call homeLoan.ts's triggerBureauRealFound step made originally —
+        // a fresh otp_session_id/questionKey/answerKey/ChallengeConfigGUID come back and must
+        // overwrite the stale ones, or the customer's next OTP submission would validate against
+        // an already-superseded challenge and fail even with the genuinely new code.
+        const ctx = toCtx(state, req.ip, req.headers['user-agent']);
+        const resp = await realBureauApi.generateBureau({
+          pan: ctx.answers.pan as string,
+          phoneNumber: ctx.answers.mobile as string,
+          officialEmail: ctx.answers.email as string,
+          pincode: ctx.answers.pincode as string,
+          applicantTypeKey: mapSegmentToHlEmploymentType(ctx.answers.segment as string | undefined),
+          token: ctx.answers.finfinityAccessToken as string,
+        });
+        const fresh =
+          resp.bureau_type === 'CIBIL'
+            ? {
+                bureauRealType: 'CIBIL' as const,
+                bureauRealCustomerId: resp.customer_id,
+                bureauRealOtpSessionId: resp.otp_session_id,
+                bureauRealQuestionKey: resp.questionKey,
+                bureauRealAnswerKey: resp.answerKey,
+                bureauRealChallengeGuid: resp.ChallengeConfigGUID,
+              }
+            : { bureauRealType: 'EXPERIAN' as const, bureauRealCustomerId: resp.customer_id, bureauRealOtpSessionId: resp.otp_session_id };
+        Object.assign(ctx.answers, fresh);
+        for (const [k, v] of Object.entries(fresh)) await persistAnswer(ctx.conversationId, k, v);
+        state.answers = ctx.answers;
+        await saveSession(state);
+      } else {
+        await smsService.sendOtp(state.conversationId, state.answers.mobile as string);
+      }
     } catch (err) {
       // The real Finfinity backend has its OWN resend cooldown (OTPWAIT, commonly ~60s — longer
       // than our own 30s Redis cooldown above), so this can legitimately fire even once our own
