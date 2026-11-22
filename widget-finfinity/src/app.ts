@@ -234,7 +234,9 @@ export class ChatWidget {
     `;
     panel.querySelector<HTMLButtonElement>('.lc-close')!.onclick = () => this.toggle(false);
     panel.querySelector<HTMLButtonElement>('.lc-start-over')!.onclick = () => {
-      if (confirm('Start a new eligibility check? This will discard your current progress.')) this.restart();
+      // Ported from widget/ (2026-11-20) — a native browser confirm() can't be styled at all and
+      // looked completely out of place against this app's own themed UI.
+      this.showConfirmDialog('Start a new eligibility check?', 'This will discard your current progress.', () => this.restart());
     };
 
     // Mobile only (see CSS) — on desktop the sidebar is always visible and these three elements
@@ -1125,6 +1127,12 @@ export class ChatWidget {
       inp.addEventListener('input', () => {
         inp.value = inp.value.replace(/\D/g, '');
         if (inp.value && inputs[i + 1]) inputs[i + 1].focus();
+        // Ported from widget/ (2026-11-20) — auto-verify the moment the last digit lands, mobile
+        // only (desktop keeps the explicit Verify button below).
+        if (window.matchMedia('(max-width:768px)').matches && inputs.every((f) => f.value.length === 1)) {
+          const code = inputs.map((f) => f.value).join('');
+          this.submitUserValue(stepId, code, '••••••', true);
+        }
       });
       inp.addEventListener('keydown', (e) => {
         if (e.key === 'Backspace' && !inp.value && inputs[i - 1]) inputs[i - 1].focus();
@@ -1299,6 +1307,43 @@ export class ChatWidget {
     btn.textContent = 'Retry';
     btn.onclick = () => this.start();
     this.composerEl.appendChild(btn);
+  }
+
+  // Ported from widget/ (2026-11-20) — themed replacement for the native window.confirm() used by
+  // "Start over", styled with this app's own lc- classes/vars rather than CIS's la- ones.
+  private showConfirmDialog(title: string, body: string, onConfirm: () => void) {
+    const existing = this.panelEl.querySelector('.lc-confirm-overlay');
+    if (existing) existing.remove();
+    const overlay = document.createElement('div');
+    overlay.className = 'lc-confirm-overlay';
+    overlay.innerHTML = `
+      <div class="lc-confirm-dialog" role="alertdialog" aria-modal="true">
+        <h3>${title}</h3>
+        <p>${body}</p>
+        <div class="lc-confirm-actions">
+          <button type="button" class="lc-confirm-cancel" data-confirm-cancel>Cancel</button>
+          <button type="button" class="lc-primary-btn lc-confirm-ok" data-confirm-ok>Yes, start over</button>
+        </div>
+      </div>
+    `;
+    const close = () => overlay.remove();
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) close();
+    });
+    overlay.querySelector('[data-confirm-cancel]')!.addEventListener('click', close);
+    overlay.querySelector('[data-confirm-ok]')!.addEventListener('click', () => {
+      close();
+      onConfirm();
+    });
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        close();
+        document.removeEventListener('keydown', onKey);
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    this.panelEl.appendChild(overlay);
+    overlay.querySelector<HTMLButtonElement>('[data-confirm-ok]')!.focus();
   }
 
   private restart() {

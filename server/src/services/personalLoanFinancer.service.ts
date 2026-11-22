@@ -118,6 +118,13 @@ function toLenderOffer(l: PlFinancerLenderEntry): LenderOffer {
     emi: Math.round(l.emi),
     rate: String(l.rate),
     tenureYears: Math.round(l.max_tenure / 12),
+    // Same new fields confirmed live on getcustomeroffers (2026-11-20, see eligibility.service.ts)
+    // — not yet confirmed on financerwiseeligibility itself, but passed through defensively in case
+    // Bitsflow adds the same lock-to-one-lender behavior here too; `l`'s own catch-all index
+    // signature already carries these through untyped if present.
+    isSelectable: l.is_selectable as boolean | undefined,
+    unselectableReason: l.unselectable_reason as string | undefined,
+    existingLeadId: l.existing_lead_id as number | undefined,
   };
 }
 

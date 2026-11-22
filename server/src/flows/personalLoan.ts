@@ -446,16 +446,32 @@ export const personalLoanSteps: StepDefinition[] = [
       if (env.PL_REAL_FINANCER_CHAIN_ENABLED) {
         const leadResult = ctx.answers.plLeadResult as LeadSyncResult | undefined;
         if (!leadResult?.builderLeadId) throw new Error('personalLoan: PL_REAL_FINANCER_CHAIN_ENABLED but plCreateLeadEarly produced no lead id');
-        const result = await personalLoanFinancerService.getEligibility({
-          customerId: Number(ctx.answers.remoteCustomerId),
-          leadId: leadResult.builderLeadId,
-          monthlyIncome: Number(ctx.answers.plIncome),
-          obligation: Number(ctx.answers.plEmi) || 0,
-          bureauScore: Number(ctx.answers.creditScore) || 0,
-          token: ctx.answers.finfinityAccessToken as string | undefined,
-        });
-        runOwnBreComparison(ctx, leadResult.builderLeadId, result.fullResults);
-        return { plOffers: result.offers, plFinancerRawByLender: result.rawByLender };
+        // Bug fixed 2026-11-20 (real customer, lead 77148: financerwiseeligibility failed outright
+        // on Bitsflow's side — error_code UBS052, "Error in Fetching" — right after employer
+        // selection). Before this fix, that failure threw all the way up and left the customer
+        // stuck on a dead-end "please try again" error, retrying the exact same failing call, even
+        // though their real lead already existed by this point. Now it's caught here specifically
+        // and turned into a soft landing (plResult below shows a distinct "we've got your details,
+        // an RM will follow up" card) instead of blocking them — we already have everything needed
+        // for a human to pick this up, so there's no reason to trap the customer on a failed API.
+        try {
+          const result = await personalLoanFinancerService.getEligibility({
+            customerId: Number(ctx.answers.remoteCustomerId),
+            leadId: leadResult.builderLeadId,
+            monthlyIncome: Number(ctx.answers.plIncome),
+            obligation: Number(ctx.answers.plEmi) || 0,
+            bureauScore: Number(ctx.answers.creditScore) || 0,
+            token: ctx.answers.finfinityAccessToken as string | undefined,
+          });
+          runOwnBreComparison(ctx, leadResult.builderLeadId, result.fullResults);
+          return { plOffers: result.offers, plFinancerRawByLender: result.rawByLender };
+        } catch (err) {
+          logger.error(
+            { err, conversationId: ctx.conversationId, leadId: leadResult.builderLeadId },
+            'financerwiseeligibility failed — falling back to a manual-review result instead of blocking the customer',
+          );
+          return { plOffers: [], offersPendingReview: true as const };
+        }
       }
 
       const offers = await computeOwnBreOffers(buildPrecheckFacts(ctx));
@@ -505,6 +521,7 @@ export const personalLoanSteps: StepDefinition[] = [
       const payload = ctx.answers.resultPayload as EligibilityResultPayload | undefined;
       if (payload?.segmentNotSupported) return "Personal Loan isn't available for business owners or self-employed professionals — it's only for salaried applicants.";
       if (payload?.underageNotSupported) return "We're unable to proceed — applicants must be at least 18 years old for this product.";
+      if (payload?.offersPendingReview) return "Thanks! We've received your details — one of our loan experts will review your profile and get in touch shortly with your personalized offers.";
       if (!payload?.eligible) return 'All done.';
       return 'Pick an offer below to proceed.';
     },
@@ -531,6 +548,7 @@ export const personalLoanSteps: StepDefinition[] = [
       const resultPayload: EligibilityResultPayload = {
         eligible: offers.length > 0,
         underageNotSupported: ctx.answers.plBlocked === 'underage' ? true : undefined,
+        offersPendingReview: ctx.answers.offersPendingReview === true ? true : undefined,
         name: ctx.answers.name as string | undefined,
         product: 'Personal Loan',
         loanType: 'Personal Loan',

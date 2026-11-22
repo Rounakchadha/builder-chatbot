@@ -247,6 +247,22 @@ function renderGoldResultCard(result: EligibilityResultPayload, apiBase: string)
  * permanently-expanded "big card" per lender, a deliberate choice when Personal Loan only ever
  * showed 3 lenders; now that it can show many more, the generic accordion is more consistent and
  * less overwhelming, matching every other product). */
+/** Bug fixed 2026-11-20: getcustomeroffers can now mark a lender `isSelectable: false` (the
+ * customer already has another application locked to a different lender) — before this, every
+ * lender always got a live "Select this offer" button regardless, so picking one of these would
+ * have hit a dead end at the real select-offer call with no explanation. Shows Bitsflow's own
+ * reason text instead of the button when that's the case. */
+function selectOfferSlotHtml(o: LenderOffer): string {
+  if (o.isSelectable === false) {
+    return `<div class="lc-select-offer-slot" data-select-offer-slot="${o.name}">
+      <div class="lc-gold-submit-confirmed">${o.unselectableReason ?? "This offer isn't available for selection right now."}</div>
+    </div>`;
+  }
+  return `<div class="lc-select-offer-slot" data-select-offer-slot="${o.name}">
+      <button class="la-primary" type="button" data-select-offer="${o.name}">Select this offer</button>
+    </div>`;
+}
+
 function personalLoanLenderCardHtml(o: LenderOffer, isBest: boolean, apiBase: string): string {
   const totalPayable = o.emi * o.tenureYears * 12;
   const totalInterest = Math.max(0, totalPayable - o.amountLakh * 100000);
@@ -268,9 +284,7 @@ function personalLoanLenderCardHtml(o: LenderOffer, isBest: boolean, apiBase: st
           <div><small>Total payable</small><strong>₹${Math.round(totalPayable).toLocaleString('en-IN')}</strong></div>
           <div><small>Total interest</small><strong>₹${Math.round(totalInterest).toLocaleString('en-IN')}</strong></div>
         </div>
-        <div class="lc-select-offer-slot" data-select-offer-slot="${o.name}">
-          <button class="la-primary" type="button" data-select-offer="${o.name}">Select this offer</button>
-        </div>
+        ${selectOfferSlotHtml(o)}
       </div>
     </details>`;
 }
@@ -281,6 +295,25 @@ function personalLoanLenderCardHtml(o: LenderOffer, isBest: boolean, apiBase: st
 function renderPersonalLoanResultCard(result: EligibilityResultPayload, apiBase: string): string {
   const offers = result.offers ?? [];
   const best = offers[0];
+
+  // Bug fixed 2026-11-20 (real customer, lead 77148): a lender-eligibility API failure used to
+  // land here too, showing the exact same "No eligibility" card as a genuine rejection — even
+  // though the lead already exists and nothing about the customer's profile was actually turned
+  // down. Checked first so it takes priority over the generic not-eligible card below.
+  if (result.offersPendingReview) {
+    return `
+      <div id="lc-result-expanded">
+        <div class="lc-not-eligible">
+          <div class="lc-not-eligible-title">We've got your details</div>
+          <div class="lc-not-eligible-text">We're reviewing your profile and will reach out shortly with your personalized loan offers.</div>
+        </div>
+        ${rmCardHtml(result.rm, result.leadId)}
+        <div id="lc-pan-offer"></div>
+        ${DISCLAIMER}
+        <button class="lc-ghost-btn" id="lc-btn-restart">Start a new check</button>
+      </div>
+    `;
+  }
 
   if (!result.eligible || !best) {
     return `
@@ -495,9 +528,7 @@ export function renderResultCard(result: EligibilityResultPayload, apiBase: stri
                 <div><small>Total payable</small><strong>₹${Math.round(totalPayable).toLocaleString('en-IN')}</strong></div>
                 <div><small>Total interest</small><strong>₹${Math.round(totalInterest).toLocaleString('en-IN')}</strong></div>
               </div>
-              <div class="lc-select-offer-slot" data-select-offer-slot="${o.name}">
-                <button class="la-primary" type="button" data-select-offer="${o.name}">Select this offer</button>
-              </div>
+              ${selectOfferSlotHtml(o)}
             </div>
           </details>`;
           })

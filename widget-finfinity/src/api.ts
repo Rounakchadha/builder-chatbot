@@ -46,7 +46,32 @@ export class ChatApi {
   }
 
   async selectOffer(sessionToken: string, lenderName: string): Promise<{ ok: boolean; error?: string; leadId?: string; rm?: { name: string; phone: string; email: string } }> {
-    return postJson(`${this.baseUrl}/api/chat/select-offer`, { sessionToken, lenderName });
+    // Bug fixed 2026-11-19 (real customer report: the server actually completed the selection
+    // successfully — 200 OK, real RM returned — a fraction of a second AFTER this call's own
+    // timeout fired, showing a false "couldn't select" error). Root cause: the underlying Finfinity
+    // call (setbrefinanceroffertenure) retries once on a transient failure, each attempt capped at
+    // the server's own 10s timeout — 10s + a ~1s pause + another 10s is a real, legitimate ~21s
+    // worst case, well past the generic 15s default every other call here uses.
+    //
+    // Extended 2026-11-20 (direct instruction: don't surface a "please retry" error on a slow-but-
+    // still-working request — silently wait longer and retry once ourselves). 20s already covers
+    // that ~21s worst case almost every time; on the rare case it's still not enough, this retries
+    // once more automatically, with no visible change to the customer (the button just keeps
+    // reading "Selecting…" the whole time) — a real error only ever shows if BOTH attempts fail.
+    // Safe to retry blindly: unlike lead creation, this just re-sets the same tenure on the same
+    // lead (setOfferTenure)/re-runs ensureLeadOnce (already dedupes), so a retry can't double-submit.
+    const ATTEMPT_TIMEOUT_MS = 20_000;
+    const attempt = () => postJson<{ ok: boolean; error?: string; leadId?: string; rm?: { name: string; phone: string; email: string } }>(
+      `${this.baseUrl}/api/chat/select-offer`,
+      { sessionToken, lenderName },
+      ATTEMPT_TIMEOUT_MS,
+    );
+    try {
+      return await attempt();
+    } catch (err) {
+      if (!(err instanceof ApiError) || err.message !== 'Request timed out') throw err;
+      return await attempt();
+    }
   }
 
   async resendOtp(sessionToken: string): Promise<{ ok: true } | { error: string; message?: string }> {

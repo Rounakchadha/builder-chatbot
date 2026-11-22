@@ -32,6 +32,10 @@ export interface EligibilityResult {
   tenureYears: number;
   loanAmountLakh: string;
   offers?: LenderOffer[];
+  /** Real property-based cap from getcustomeroffers' new final_elig_prop_based field (2026-11-20),
+   * in lakh — same figure repeated on every lender in a live response, so just the first one found.
+   * Undefined for the mock, or if a future real response ever omits it. */
+  propertyBasedEligibilityLakh?: number;
 }
 
 export interface EligibilityService {
@@ -64,6 +68,11 @@ interface FinalLenderOffer {
   min_tenure: number;
   max_tenure: number;
   ltv: number;
+  /** New fields seen live (2026-11-20) — not in any earlier confirmed response, so all optional. */
+  final_elig_prop_based?: number;
+  is_selectable?: boolean;
+  unselectable_reason?: string;
+  existing_lead_id?: number;
 }
 interface RejectedLenderOffer {
   lender_name: string;
@@ -162,6 +171,13 @@ class RealEligibilityService implements EligibilityService {
         // tenure of e.g. 211 months became "18 years" (216 months), overstating what this lender
         // actually offers. Math.floor never overstates it.
         tenureYears: Math.floor(l.max_tenure / 12),
+        // New fields, 2026-11-20 — see this file's FinalLenderOffer doc comment. `is_selectable`
+        // only ever shows up as `false` (customer already locked to a different lender's
+        // application); undefined/true both mean normal/selectable, so pass through as-is rather
+        // than defaulting to true here — the widget's own check already treats undefined as fine.
+        isSelectable: l.is_selectable,
+        unselectableReason: l.unselectable_reason,
+        existingLeadId: l.existing_lead_id,
       }))
       // Security-review finding, 2026-10-23: this used to trust getcustomeroffers already returned
       // lenders best-first and just took offers[0] — nothing actually guaranteed that ordering.
@@ -170,8 +186,18 @@ class RealEligibilityService implements EligibilityService {
     if (offers.length === 0) {
       return { eligible: false, emi: 0, tenureYears: 0, loanAmountLakh: '0' };
     }
+    // Same figure repeated on every lender in the live example that introduced this field — just
+    // take the first one that actually has it, rather than assuming every lender always will.
+    const propertyBasedEligLakh = data.final_lender_list.find((l) => l.final_elig_prop_based !== undefined)?.final_elig_prop_based;
     const best = offers[0];
-    return { eligible: true, emi: best.emi, tenureYears: best.tenureYears, loanAmountLakh: String(best.amountLakh), offers };
+    return {
+      eligible: true,
+      emi: best.emi,
+      tenureYears: best.tenureYears,
+      loanAmountLakh: String(best.amountLakh),
+      offers,
+      propertyBasedEligibilityLakh: propertyBasedEligLakh !== undefined ? propertyBasedEligLakh / 100000 : undefined,
+    };
   }
 }
 

@@ -419,14 +419,18 @@ async function computeEligibilityPayload(
   }
 
   // Financial eligibility (pure income/FOIR, ignoring the property entirely) is always the best
-  // offer's amount. If a property value is known, it's also capped by an assumed LTV % of that
-  // value — a placeholder ratio until the real BRE API supplies the actual LTV policy.
+  // offer's amount. If a property value is known, it's also capped — by Bitsflow's own real
+  // property-based figure (`final_elig_prop_based`, live since 2026-11-20) when getcustomeroffers
+  // supplies one, since that's an actual policy number instead of a guess; falls back to our own
+  // placeholder LTV % only when it doesn't (e.g. LAP, or an older/mock response). Note this still
+  // only ever caps this one headline figure, never each lender's own (still-uncapped) amountLakh —
+  // Bitsflow's real response doesn't apply this cap to individual lenders' offers either.
   const financialEligibilityLakh = outcome.offers?.[0]?.amountLakh;
   const propertyValue = a.propertyValue as number | undefined;
   let propertyCappedEligibilityLakh: number | undefined;
   if (propertyValue && financialEligibilityLakh !== undefined) {
-    const ltv = product === 'Home loan' ? 0.8 : 0.65;
-    propertyCappedEligibilityLakh = Number(Math.min(financialEligibilityLakh, ltv * (propertyValue / 100000)).toFixed(1));
+    const capLakh = outcome.propertyBasedEligibilityLakh ?? (product === 'Home loan' ? 0.8 : 0.65) * (propertyValue / 100000);
+    propertyCappedEligibilityLakh = Number(Math.min(financialEligibilityLakh, capLakh).toFixed(1));
   }
 
   return {

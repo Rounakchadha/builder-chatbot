@@ -43,6 +43,19 @@ const LENDER_LOGOS: Record<string, string> = {
   'ICICI Bank': 'icici-bank.png',
   'ICICI HFC': 'icici-bank.png',
   'SBI Home Loans': 'sbi-home-loans.png',
+  // Confirmed 2026-10-31 that Home Loan's own HL_LENDER_DISPLAY_NAME map (used for our own BRE
+  // comparison against the exact same real lender, homeLoanEligibility.service.ts) spells this one
+  // 'State Bank of India', not 'SBI Home Loans' — the real getcustomeroffers chain apparently uses
+  // that full name too, which never matched the only key that existed here, so it silently fell
+  // back to the initials circle instead of the real logo. 'SBI' added too as a cheap extra guard in
+  // case a shorter form shows up somewhere.
+  'State Bank of India': 'sbi-home-loans.png',
+  'SBI': 'sbi-home-loans.png',
+  // Karur Vysya — had no logo asset or map entry at all before 2026-10-31 (same report); same
+  // HL_LENDER_DISPLAY_NAME map confirms the real display name is exactly 'Karur Vysya'. Logo
+  // sourced from the bank's own Wikipedia infobox image, same precedent as the other logos above.
+  'Karur Vysya': 'karur-vysya-bank.svg',
+  'Karur Vysya Bank': 'karur-vysya-bank.svg',
   'Axis Bank': 'axis-bank.png',
   'Kotak Mahindra Bank': 'kotak-mahindra-bank.png',
   'Kotak Bank': 'kotak-mahindra-bank.png',
@@ -59,6 +72,13 @@ const LENDER_LOGOS: Record<string, string> = {
   'IDFC Bank': 'idfc-first-bank.png',
   'IIFL': 'iifl.png',
   'Piramal Housing': 'piramal-finance.png',
+  // Added 2026-10-30 — the user supplied these 3 directly, previously the only confirmed-missing
+  // logos (see the comment above this map); exact display-name strings confirmed from
+  // FINFINITY-BRE-MAIN/hl-eligibility-precheck's lenders-data (L&T/Aadhar) and
+  // server/src/services/personalLoanEligibility.service.ts + flows/goldLoan.ts (Muthoot).
+  'L&T Housing Finance': 'lt-housing-finance.png',
+  'Aadhar Housing': 'aadhar-housing-finance.jpg',
+  'Muthoot Finance': 'muthoot-finance.png',
   'Piramal Finance': 'piramal-finance.png',
   'Piramal': 'piramal-finance.png',
   'Aditya Birla Housing Finance': 'aditya-birla.png',

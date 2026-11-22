@@ -187,6 +187,17 @@ export interface LenderOffer {
   emi: number;
   rate: string;
   tenureYears: number;
+  /** New field seen live from getcustomeroffers (2026-11-20) — false when Bitsflow's own backend
+   * refuses to let this lender be picked (e.g. the customer already has another application
+   * assigned to a different lender). Undefined/true means normal, selectable as always — this
+   * field didn't exist before, so older/mock responses simply never set it. */
+  isSelectable?: boolean;
+  /** Bitsflow's own human-readable explanation for isSelectable === false — shown to the customer
+   * in place of the "Select this offer" button rather than letting them hit a dead end at the real
+   * select-offer call. */
+  unselectableReason?: string;
+  /** The lead id Bitsflow says this customer is already locked to, when isSelectable === false. */
+  existingLeadId?: number;
 }
 
 export interface EligibilityResultPayload {
@@ -209,6 +220,12 @@ export interface EligibilityResultPayload {
    * propertyValueLakh. Becomes the headline figure in that case, with financialEligibilityLakh
    * shown alongside it so the customer can see both numbers. */
   propertyCappedEligibilityLakh?: number;
+  /** New field seen live from getcustomeroffers (2026-11-20): `final_elig_prop_based`, a real
+   * property-value-based ceiling Bitsflow now computes server-side, same figure repeated on every
+   * lender in the response. When present, this replaces our own placeholder 80%/65% LTV guess as
+   * the source for propertyCappedEligibilityLakh above — still only applied to that one headline
+   * figure, never to each lender's own (still-uncapped) amountLakh. */
+  propertyBasedEligibilityLakh?: number;
   offers?: LenderOffer[];
   rm: { name: string; phone: string; email: string };
   leadId?: string;
@@ -237,4 +254,11 @@ export interface EligibilityResultPayload {
    * instead of showing the full lender list again and asking them to pick once more (bug found
    * 2026-11-02: this used to be pure client-side DOM state, lost on every reload). */
   selectedLenderName?: string;
+  /** Set when a real lender-eligibility API (e.g. Personal Loan's financerwiseeligibility) failed
+   * outright rather than genuinely returning no offers (bug fixed 2026-11-20: a customer who hit
+   * this used to be shown the same "No eligibility for this profile" card as a real rejection, with
+   * no way forward — even though their real lead already exists by this point). `leadCreated`/
+   * `leadId`/`rm` are still populated as normal; the widget shows a distinct "we've got your
+   * details, an RM will follow up" card instead of either the lender list or the not-eligible card. */
+  offersPendingReview?: boolean;
 }
