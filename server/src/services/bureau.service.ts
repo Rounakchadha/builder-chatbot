@@ -92,6 +92,21 @@ export interface RealBureauApi {
   // automatically from whatever generateBureau() returned, never shown to or asked of the customer.
   validateBureauCibil(input: { customerId: number; otpSessionId: string; phoneNumber: string; questionKey: string; answerKey: string; challengeConfigGuid: string; otp: string; token: string }): Promise<BureauPull>;
   validateBureauExperian(input: { customerId: number; otpSessionId: string; phoneNumber: string; otp: string; token: string }): Promise<BureauPull>;
+  /** Confirmed by Bitsflow 2026-11-23 — NOT a fresh generateBureau() call (that starts an entirely
+   * new session/question). Resending reuses the EXISTING otp_session_id (and, for CIBIL, the same
+   * questionKey/answerKey/ChallengeConfigGUID already on file from the original trigger) — same
+   * /leadflow/validatebureau endpoint as submitting the real answer, just `resendOTP: true` in place
+   * of `otp`. No useful data in the response beyond success/failure. */
+  resendBureauOtp(input: {
+    bureauType: 'CIBIL' | 'EXPERIAN';
+    customerId: number;
+    otpSessionId: string;
+    phoneNumber: string;
+    questionKey?: string;
+    answerKey?: string;
+    challengeConfigGuid?: string;
+    token: string;
+  }): Promise<void>;
   /** Reads back bureau data ALREADY on file for this customer/product — does not trigger a new
    * pull. See fetchBureauData's own doc comment for the full caveat on the response shape. `pan`
    * added 2026-11-07 — confirmed by a real prod example from Ritendra/Bitsflow that the request
@@ -173,6 +188,30 @@ export const realBureauApi: RealBureauApi = {
       { token: input.token, retryOnTransient: false },
     );
     return { creditScore: Number(results[0].bureauScore), source: 'experian', accessToken: results[1]?.access, refreshToken: results[1]?.refresh };
+  },
+  async resendBureauOtp(input) {
+    await finfinityClient.post(
+      '/leadflow/validatebureau',
+      input.bureauType === 'CIBIL'
+        ? {
+            customer_id: input.customerId,
+            bureau: 'CIBIL',
+            otp_session_id: input.otpSessionId,
+            phone_number: input.phoneNumber,
+            questionKey: input.questionKey,
+            answerKey: input.answerKey,
+            ChallengeConfigGUID: input.challengeConfigGuid,
+            resendOTP: true,
+          }
+        : {
+            customer_id: input.customerId,
+            bureau: 'EXPERIAN',
+            otp_session_id: input.otpSessionId,
+            phone_number: input.phoneNumber,
+            resendOTP: true,
+          },
+      { token: input.token, retryOnTransient: false },
+    );
   },
   // STITCHED IN 2026-10-31 ON AN UNCONFIRMED RESPONSE SHAPE — user said "stitch it for now, I'll
   // ask Bitsflow how this works" and will confirm the real shape later. Confirmed LIVE (not

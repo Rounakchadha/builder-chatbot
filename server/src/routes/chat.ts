@@ -11,7 +11,6 @@ import { EDITABLE_FIELDS, isEditableField, isFieldEditableNow, PROFILE_FIELDS } 
 import { createSession, loadSession, persistAnswer, advanceCurrentStep, saveSession, logMessage, type SessionState } from '../services/session.service';
 import { smsService } from '../services/sms.service';
 import { realBureauApi } from '../services/bureau.service';
-import { mapSegmentToHlEmploymentType } from '../services/homeLoanEligibility.service';
 import { FinfinityApiError } from '../services/finfinityClient';
 import { goldLeadService, sandboxGoldLeadService } from '../services/goldLoan.service';
 import { isSandboxPan, isSandboxMobile } from '../config/sandbox';
@@ -225,6 +224,13 @@ async function beginNewSession(ip: string, userAgent: string | undefined, identi
     const clientToken = await fetchClientToken();
     if (clientToken) {
       ctxAnswers.finfinityAccessToken = clientToken;
+      // Security-review finding, 2026-11-23: this is the one real risk flagged in the pre-launch
+      // audit — EXTERNAL_SDK_SECRET's whole blast radius is "whoever holds it can claim any mobile
+      // number is verified," and this is the exact moment that trust gets exercised (OTP skipped
+      // entirely, real PII fetched for whatever mobile the launch token claims). No behavior change
+      // here, just making every real use of this path visible after the fact — this should log
+      // rarely until CIS actually starts sending verified:true for real.
+      logger.info({ event: 'launch_token_otp_skipped', mobileMasked }, 'OTP skipped via verified:true launch token + client-token');
     } else {
       logger.warn({ event: 'launch_token_verified_no_client_token' }, 'launch token claimed verified but no client token is configured/available — falling back to the normal OTP flow');
     }
@@ -404,15 +410,24 @@ async function render(stepId: string, sessionToken: string, ctx: StepContext, er
   return response;
 }
 
-const OTP_STEP_IDS = ['otpDedupe', 'otpBureauFound', 'otpBureauNotFound', 'otpPanDuplicateVerify', 'otpEmailDuplicateVerify', 'otpBureauRealFound'];
+const OTP_STEP_IDS = ['otpDedupe', 'otpBureauFound', 'otpBureauNotFound', 'otpPanDuplicateVerify', 'otpEmailDuplicateVerify', 'otpBureauRealFound', 'otpBureauRealNotFound'];
 
-// Bug fixed 2026-11-22 (real prod customer, first real bureau pull ever run: the CIBIL OTP never
+// Bug fixed 2026-11-22/23 (real prod customer, first real bureau pull ever run: the CIBIL OTP never
 // arrived and there was no way to ask for a new one) — every OTP step above gets its code from our
 // own smsService.sendOtp (a simple mobile-number resend), but the REAL bureau consent step's OTP
-// comes from a completely different call (updatebureau, via a fresh generateBureau()) that returns
-// a NEW otp_session_id/questionKey/answerKey/ChallengeConfigGUID each time — the old ones from the
-// original triggerBureauRealFound call become stale and must be replaced, not just re-sent.
-const REAL_BUREAU_OTP_STEP_ID = 'otpBureauRealFound';
+// needs its own handling. Initial fix (2026-11-22) called generateBureau() again, which starts an
+// entirely NEW bureau session (new otp_session_id/question) — confirmed with Bitsflow (2026-11-23)
+// that's not how they expect a resend to work: it reuses the EXISTING session via validatebureau's
+// own `resendOTP: true` flag instead (see resendBureauOtp in bureau.service.ts). Covers both found
+// (otpBureauRealFound) and not-found (otpBureauRealNotFound) customers — the earlier fix only
+// handled the found case, leaving brand-new customers (the segment most likely to need a resend on
+// a first partner integration) with no way to ask for a new code at all.
+const REAL_BUREAU_OTP_STEP_IDS = ['otpBureauRealFound', 'otpBureauRealNotFound'];
+
+// Direct instruction (2026-11-23): a real bureau resend re-triggers a real, billed CIBIL/Experian
+// action with no natural ceiling otherwise — cap it at 2 total attempts per conversation ("once,
+// and if that one fails, one retry"), separate from and on top of the existing 30s pacing cooldown.
+const MAX_REAL_BUREAU_OTP_RESENDS = 2;
 
 /** A step's onAnswer throwing here almost always means an external call failed (a real bank API
  * timing out, erroring, or being unreachable) — never something the customer did wrong. Shown as
@@ -658,39 +673,41 @@ export async function chatRoutes(app: FastifyInstance) {
     // can ever win. If the send itself then fails for a reason OTHER than the real backend's own
     // cooldown, the claim is released below so the customer isn't stuck waiting on a resend that
     // never actually went out.
+    const isRealBureauStep = REAL_BUREAU_OTP_STEP_IDS.includes(state.currentStepId);
+
+    // Separate, stricter cap for the bureau step specifically — a real, billed CIBIL/Experian
+    // action, unlike the free SMS resend every other OTP step uses. Counted (and persisted)
+    // regardless of whether the attempt below actually succeeds, per direct instruction: "once,
+    // unless it fails then one retry" — i.e. a hard ceiling of attempts, not of successes.
+    if (isRealBureauStep) {
+      const resendCount = (state.answers.bureauOtpResendCount as number | undefined) ?? 0;
+      if (resendCount >= MAX_REAL_BUREAU_OTP_RESENDS) {
+        return reply.code(429).send({ error: 'resend_limit_reached', message: "You've already requested a new code the maximum number of times for this check — please start over if you still haven't received it." });
+      }
+      state.answers.bureauOtpResendCount = resendCount + 1;
+      await persistAnswer(state.conversationId, 'bureauOtpResendCount', resendCount + 1);
+    }
+
     const claimed = await redis.set(cooldownKey, '1', 'EX', 30, 'NX');
     if (!claimed) return reply.code(429).send({ error: 'resend_too_soon', message: 'Please wait a bit before requesting another OTP.' });
 
     try {
-      if (state.currentStepId === REAL_BUREAU_OTP_STEP_ID) {
-        // Re-runs the exact same call homeLoan.ts's triggerBureauRealFound step made originally —
-        // a fresh otp_session_id/questionKey/answerKey/ChallengeConfigGUID come back and must
-        // overwrite the stale ones, or the customer's next OTP submission would validate against
-        // an already-superseded challenge and fail even with the genuinely new code.
-        const ctx = toCtx(state, req.ip, req.headers['user-agent']);
-        const resp = await realBureauApi.generateBureau({
-          pan: ctx.answers.pan as string,
-          phoneNumber: ctx.answers.mobile as string,
-          officialEmail: ctx.answers.email as string,
-          pincode: ctx.answers.pincode as string,
-          applicantTypeKey: mapSegmentToHlEmploymentType(ctx.answers.segment as string | undefined),
-          token: ctx.answers.finfinityAccessToken as string,
+      if (isRealBureauStep) {
+        // Confirmed with Bitsflow (2026-11-23): reuses the EXISTING otp_session_id (and, for CIBIL,
+        // the same questionKey/answerKey/ChallengeConfigGUID already on file) via validatebureau's
+        // own `resendOTP: true` — NOT a fresh generateBureau() call, which would start an entirely
+        // new session. See resendBureauOtp's own doc comment in bureau.service.ts.
+        const a = state.answers;
+        await realBureauApi.resendBureauOtp({
+          bureauType: a.bureauRealType as 'CIBIL' | 'EXPERIAN',
+          customerId: a.bureauRealCustomerId as number,
+          otpSessionId: a.bureauRealOtpSessionId as string,
+          phoneNumber: a.mobile as string,
+          questionKey: a.bureauRealQuestionKey as string | undefined,
+          answerKey: a.bureauRealAnswerKey as string | undefined,
+          challengeConfigGuid: a.bureauRealChallengeGuid as string | undefined,
+          token: a.finfinityAccessToken as string,
         });
-        const fresh =
-          resp.bureau_type === 'CIBIL'
-            ? {
-                bureauRealType: 'CIBIL' as const,
-                bureauRealCustomerId: resp.customer_id,
-                bureauRealOtpSessionId: resp.otp_session_id,
-                bureauRealQuestionKey: resp.questionKey,
-                bureauRealAnswerKey: resp.answerKey,
-                bureauRealChallengeGuid: resp.ChallengeConfigGUID,
-              }
-            : { bureauRealType: 'EXPERIAN' as const, bureauRealCustomerId: resp.customer_id, bureauRealOtpSessionId: resp.otp_session_id };
-        Object.assign(ctx.answers, fresh);
-        for (const [k, v] of Object.entries(fresh)) await persistAnswer(ctx.conversationId, k, v);
-        state.answers = ctx.answers;
-        await saveSession(state);
       } else {
         await smsService.sendOtp(state.conversationId, state.answers.mobile as string);
       }
