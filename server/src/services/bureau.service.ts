@@ -236,23 +236,15 @@ export const realBureauApi: RealBureauApi = {
       { token: input.token, retryOnTransient: false },
     );
 
-    // Plain path, if Finfinity ever just echoes the score back directly (seen empty as "" for a
-    // customer with no data — treat that, and any non-numeric junk, as "nothing here yet").
+    // CONFIRMED live 2026-11-25 (tested directly against a known identity with a real score on
+    // file, via the prod client-token path): the score lives at top-level `activity.bureau_score`
+    // — "" for a customer with no data on file, a real number otherwise. The `data` array alongside
+    // it is account/loan-level detail (bank_name, loan_type, loan_amount, etc.), not the score
+    // itself — the previously-guessed nested TrueLinkCreditReport path never matched anything real
+    // and has been removed.
     const plainScore = Number(res.activity?.bureau_score);
     if (res.activity?.bureau_score && !Number.isNaN(plainScore) && plainScore > 0) {
       return { creditScore: plainScore, source: 'bureau' };
-    }
-
-    // Guessed nesting for the raw CIBIL/TrueLink shape the user showed — UNCONFIRMED, see the
-    // block comment above. Walks `data[0]` (or `data` itself, if it's an object, not an array) down
-    // the same path the sample document used, failing closed (null) if any step doesn't exist
-    // rather than throwing on a shape mismatch.
-    const first = Array.isArray(res.data) ? res.data[0] : res.data;
-    const riskScore = (first as any)?.GetCustomerAssetsResponse?.GetCustomerAssetsSuccess?.Asset?.TrueLinkCreditReport?.Borrower?.CreditScore?.riskScore;
-    const parsed = Number(riskScore);
-    if (riskScore !== undefined && !Number.isNaN(parsed) && parsed > 0) {
-      logger.warn({ event: 'bureau_fetch_unconfirmed_shape_matched', customerId: input.customerId }, 'fetchbureaudata matched the UNCONFIRMED guessed response shape — flag to confirm with Bitsflow whether this is reliable');
-      return { creditScore: parsed, source: 'bureau' };
     }
 
     return null;

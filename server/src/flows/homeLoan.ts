@@ -1689,6 +1689,28 @@ export const homeLoanFlow: FlowDefinition = {
       botMessage: () => null,
       input: () => ({ type: 'none' }),
       onAnswer: async (_parsed, ctx) => {
+        // Confirmed live 2026-11-25 (real customer complaint: "this customer existed in Bitsflow's
+        // DB, it should come back with no-score, not fail outright") — fetchbureaudata is the
+        // read-only "does this already-known customer have a score on file" check, and we were
+        // never calling it at all for a dedupeFound customer; every check went straight to
+        // triggering a brand-new pull regardless. Its real response shape is also now confirmed
+        // (tested live against a known identity with a real score on file): the score lives at
+        // top-level `activity.bureau_score`, which bureau.service.ts's fetchBureauData already
+        // parses correctly — the gap was purely that nothing here ever called it. Only skips the
+        // whole OTP/consent dance when a real score is actually found; returns null (not an error)
+        // for a known customer with nothing on file yet, same as before, just without wastefully
+        // starting a new pull first.
+        const remoteCustomerId = ctx.answers.remoteCustomerId as number | undefined;
+        const productCode = PRODUCT_CODE[ctx.answers.product as string];
+        if (remoteCustomerId && productCode) {
+          const existing = await realBureauApi.fetchBureauData({
+            customerId: remoteCustomerId,
+            productCode,
+            pan: ctx.answers.pan as string,
+            token: ctx.answers.finfinityAccessToken as string,
+          });
+          if (existing) return { creditScore: existing.creditScore, bureauSource: existing.source };
+        }
         return runGenerateBureau({
           pan: ctx.answers.pan as string,
           phoneNumber: ctx.answers.mobile as string,
