@@ -493,7 +493,7 @@ export function renderResultCard(result: EligibilityResultPayload, apiBase: stri
         <div class="la-result-grid">
           <div><small>Product</small><strong>${result.product}</strong></div>
           <div><small>Loan type</small><strong>${result.loanType}</strong></div>
-          ${result.creditScore ? `<div><small>CIBIL score</small><strong>${result.creditScore}</strong></div>` : ''}
+          ${result.creditScore ? `<div><small>${result.bureauSource === 'experian' ? 'Experian' : 'CIBIL'} score</small><strong>${result.creditScore}</strong></div>` : ''}
           ${result.segment ? `<div><small>Segment</small><strong>${result.segment}</strong></div>` : ''}
           ${result.propertyType ? `<div><small>Property type</small><strong>${result.propertyType}</strong></div>` : ''}
           ${result.collateralType ? `<div><small>Collateral type</small><strong>${result.collateralType}</strong></div>` : ''}

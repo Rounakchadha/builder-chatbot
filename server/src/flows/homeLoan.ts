@@ -81,6 +81,13 @@ function namesLooselyMatch(a: string, b: string): boolean {
 // never to gate anything. 18 is the standard contracting-age floor for a lending product in India.
 export const MIN_APPLICANT_AGE_YEARS = 18;
 
+// Bug fixed 2026-11-25 (real customer, Sparsh's own test: pulled a real Experian score, shown as
+// "CIBIL score" everywhere regardless) — every message in this file hardcoded "CIBIL", assuming
+// that's always the bureau, when the real flow can (and does) fall back to Experian.
+function bureauLabel(source: unknown): string {
+  return source === 'experian' ? 'Experian' : 'CIBIL';
+}
+
 // Confirmed with Bitsflow (2026-11-25): when CIBIL comes back with one of these 3 codes, there's
 // no usable CIBIL record/question to work with — the fix is just calling updatebureau again, and
 // their backend picks Experian the second time. No request-body change needed; there's no field we
@@ -282,7 +289,7 @@ export function renderFoundProfileSummary(ctx: StepContext): string {
   if (a.email) lines.push(`<strong>Email:</strong> ${escapeHtml(a.email as string)}`);
   if (a.pincode) lines.push(`<strong>Pincode:</strong> ${a.pincode}`);
   if (a.segment) lines.push(`<strong>Employment:</strong> ${a.segment}`);
-  if (a.creditScore) lines.push(`<strong>CIBIL score:</strong> ${a.creditScore}`);
+  if (a.creditScore) lines.push(`<strong>${bureauLabel(a.bureauSource)} score:</strong> ${a.creditScore}`);
   return `Hi ${firstName(ctx)}, good to have you back — here's what we have on file:<br>${lines.join('<br>')}`;
 }
 
@@ -359,7 +366,7 @@ function buildProfileSummary(ctx: StepContext): string {
   if (fullName) lines.push(`<strong>Name:</strong> ${escapeHtml(fullName)}`);
   if (a.mobile) lines.push(`<strong>Mobile:</strong> +91 ${maskMobile(a.mobile as string)}`);
   if (a.pan) lines.push(`<strong>PAN:</strong> ${maskPan(a.pan as string)}`);
-  if (a.creditScore) lines.push(`<strong>CIBIL score:</strong> ${a.creditScore}`);
+  if (a.creditScore) lines.push(`<strong>${bureauLabel(a.bureauSource)} score:</strong> ${a.creditScore}`);
   if (a.email) lines.push(`<strong>Email:</strong> ${escapeHtml(a.email as string)}`);
   if (a.segment) lines.push(`<strong>Employment:</strong> ${a.segment}`);
   if (a.pincode) lines.push(`<strong>Pincode:</strong> ${a.pincode}`);
@@ -522,6 +529,7 @@ async function computeEligibilityPayload(
     loanType: a.loanType as string,
     segment: segment as any,
     creditScore: a.creditScore as number | undefined,
+    bureauSource: a.bureauSource as 'bureau' | 'experian' | undefined,
     propertyType: a.propertyType as string | undefined,
     collateralType: a.collateralType as string | undefined,
     occupancy: a.occupancy as string | undefined,
@@ -714,6 +722,7 @@ export async function computeResultPayload(ctx: StepContext): Promise<Eligibilit
       loanType: (a.loanType as string) ?? '',
       segment: a.segment as EligibilityResultPayload['segment'],
       creditScore: a.creditScore as number | undefined,
+      bureauSource: a.bureauSource as 'bureau' | 'experian' | undefined,
       rm: pickRm(seedKey),
       leadCreated: false,
     };
@@ -744,6 +753,7 @@ export async function computeResultPayload(ctx: StepContext): Promise<Eligibilit
       loanType: (a.loanType as string) ?? '',
       segment: a.segment as EligibilityResultPayload['segment'],
       creditScore: a.creditScore as number | undefined,
+      bureauSource: a.bureauSource as 'bureau' | 'experian' | undefined,
       rm: pickRm(seedKey),
       leadCreated: false,
     };
@@ -1783,7 +1793,7 @@ export const homeLoanFlow: FlowDefinition = {
       // gating on creditScore itself would skip this step (and its caching + message) for the real
       // path entirely.
       isApplicable: (ctx) => ctx.answers.dedupeFound === true && !ctx.answers.bureauScoreShown && isIndividualPan(ctx.answers.pan as string | undefined),
-      botMessage: (ctx) => `Your CIBIL score is <strong>${ctx.answers.creditScore}</strong>.`,
+      botMessage: (ctx) => `Your ${bureauLabel(ctx.answers.bureauSource)} score is <strong>${ctx.answers.creditScore}</strong>.`,
       input: () => ({ type: 'none' }),
       onAnswer: async (_parsed, ctx) => {
         let creditScore = ctx.answers.creditScore as number | undefined;
@@ -1944,7 +1954,7 @@ export const homeLoanFlow: FlowDefinition = {
           );
         }
         if (a.pincode) lines.push(`<strong>Pincode:</strong> ${a.pincode}`);
-        if (a.creditScore) lines.push(`<strong>CIBIL score:</strong> ${a.creditScore}`);
+        if (a.creditScore) lines.push(`<strong>${bureauLabel(a.bureauSource)} score:</strong> ${a.creditScore}`);
         return `Here's what we have:<br>${lines.join('<br>')}`;
       },
       input: () => ({ type: 'none' }),

@@ -208,6 +208,12 @@ export interface EligibilityResultPayload {
   // Optional because Gold loan doesn't ask for an employment segment at all (see flows/goldLoan.ts).
   segment?: Segment;
   creditScore?: number;
+  /** Which bureau the score above actually came from — CIBIL is the default/assumed bureau
+   * everywhere this was displayed before 2026-11-25, which was wrong whenever the real flow fell
+   * back to Experian (real customer, Sparsh's own test: pulled an Experian score, shown as "CIBIL
+   * score" regardless). Undefined only for the mock path/older cached data that predates this
+   * field — treated the same as 'bureau' (CIBIL) for display, matching the old hardcoded behavior. */
+  bureauSource?: 'bureau' | 'experian';
   propertyType?: string;
   collateralType?: string;
   occupancy?: string;
