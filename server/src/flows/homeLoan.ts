@@ -10,6 +10,7 @@ import { UserFacingError } from '../lib/userFacingError';
 import { prisma } from '../lib/prisma';
 import { Prisma } from '@prisma/client';
 import { bureauService, realBureauApi, realBureauFlowEnabled, type BureauPull } from '../services/bureau.service';
+import { FinfinityApiError } from '../services/finfinityClient';
 import { customerService } from '../services/customer.service';
 import { dedupeService, type DuplicateMatch } from '../services/dedupe.service';
 import { eligibilityService } from '../services/eligibility.service';
@@ -79,6 +80,34 @@ function namesLooselyMatch(a: string, b: string): boolean {
 // the real DOB (from the PAN lookup) was only ever used to DISPLAY an age on the profile summary,
 // never to gate anything. 18 is the standard contracting-age floor for a lending product in India.
 export const MIN_APPLICANT_AGE_YEARS = 18;
+
+// Confirmed with Bitsflow (2026-11-25): when CIBIL comes back with one of these 3 codes, there's
+// no usable CIBIL record/question to work with — the fix is just calling updatebureau again, and
+// their backend picks Experian the second time. No request-body change needed; there's no field we
+// send to choose the bureau ourselves (api-fin/bureau_api_payloads.txt's own note: "the bureau type
+// is determined by backend configuration"). CIBIL_NOT_FOUND/NO_HISTORY both mean no usable CIBIL
+// record exists for this PAN; OTP_ALTERNATE_MOBILE is CIBIL's own "this isn't going to work
+// smoothly" signal — direct instruction, 2026-11-25, to treat all 3 the same way rather than build
+// a distinct flow for OTP_ALTERNATE_MOBILE specifically (unconfirmed whether it even carries a
+// corrected mobile number the way Experian's own 404 does).
+const CIBIL_FALLBACK_CODES = new Set(['CIBIL_NOT_FOUND', 'NO_HISTORY', 'OTP_ALTERNATE_MOBILE']);
+
+/** Shared by both triggerBureauRealFound and triggerBureauRealNotFound — same call, same fallback,
+ * just gated differently by dedupeFound. Retries exactly once: if CIBIL fails with one of the 3
+ * codes above, calling generateBureau() again should come back as Experian instead. If that SECOND
+ * attempt also fails, let it throw — caught by chat.ts's generic error handling same as any other
+ * real API failure (no bureau score available right now), rather than inventing a third attempt. */
+async function generateBureauWithExperianFallback(input: Parameters<typeof realBureauApi.generateBureau>[0]) {
+  try {
+    return await realBureauApi.generateBureau(input);
+  } catch (err) {
+    if (err instanceof FinfinityApiError && CIBIL_FALLBACK_CODES.has(err.code)) {
+      logger.info({ event: 'bureau_cibil_fallback_to_experian', code: err.code }, 'CIBIL unavailable for this PAN — retrying for Experian');
+      return await realBureauApi.generateBureau(input);
+    }
+    throw err;
+  }
+}
 
 /** Business Loan isn't offered to a salaried customer at all (2026-10-17 instruction) — hidden
  * from the 'product' choices outright rather than offered and rejected deeper into its own flow
@@ -1590,7 +1619,7 @@ export const homeLoanFlow: FlowDefinition = {
       botMessage: () => null,
       input: () => ({ type: 'none' }),
       onAnswer: async (_parsed, ctx) => {
-        const resp = await realBureauApi.generateBureau({
+        const resp = await generateBureauWithExperianFallback({
           pan: ctx.answers.pan as string,
           phoneNumber: ctx.answers.mobile as string,
           officialEmail: ctx.answers.email as string,
@@ -1648,6 +1677,11 @@ export const homeLoanFlow: FlowDefinition = {
                 });
         } catch (err) {
           logger.error({ err, event: 'bureau_real_validate_failed' }, 'validatebureau failed');
+          // Confirmed CIBIL error code, 2026-11-25 — a distinct, clearer message than the generic
+          // "incorrect OTP" for this specific case (too many wrong answers, not just one typo).
+          if (err instanceof FinfinityApiError && err.code === 'EXCEEDED_ATTEMPTS') {
+            throw new Error('Too many incorrect attempts. Please start over.');
+          }
           throw new Error('Incorrect OTP. Please try again.');
         }
         return {
@@ -1744,7 +1778,7 @@ export const homeLoanFlow: FlowDefinition = {
       botMessage: () => null,
       input: () => ({ type: 'none' }),
       onAnswer: async (_parsed, ctx) => {
-        const resp = await realBureauApi.generateBureau({
+        const resp = await generateBureauWithExperianFallback({
           pan: ctx.answers.pan as string,
           phoneNumber: ctx.answers.mobile as string,
           officialEmail: ctx.answers.email as string,
@@ -1802,6 +1836,11 @@ export const homeLoanFlow: FlowDefinition = {
                 });
         } catch (err) {
           logger.error({ err, event: 'bureau_real_validate_failed' }, 'validatebureau failed');
+          // Confirmed CIBIL error code, 2026-11-25 — a distinct, clearer message than the generic
+          // "incorrect OTP" for this specific case (too many wrong answers, not just one typo).
+          if (err instanceof FinfinityApiError && err.code === 'EXCEEDED_ATTEMPTS') {
+            throw new Error('Too many incorrect attempts. Please start over.');
+          }
           throw new Error('Incorrect OTP. Please try again.');
         }
         void rememberProfile(a.mobile as string, { creditScore: pull.creditScore, bureauSource: pull.source });
