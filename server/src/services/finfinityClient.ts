@@ -113,8 +113,20 @@ function sleep(ms: number): Promise<void> {
  * to redact it after the fact at every logging call site. */
 function redactDetail(value: unknown): unknown {
   if (value == null || typeof value === 'number' || typeof value === 'boolean') return value;
-  if (typeof value === 'string') return value.length > 80 ? `${value.slice(0, 80)}…[truncated]` : value;
-  return '[object withheld from logs — Finfinity error detail payloads can echo back submitted values]';
+  // Bumped 80->1000 chars, 2026-11-25 — too short to actually debug real failures with (today
+  // alone: a duplicate-key constraint message and a "both bureaus failed" detail both got cut off
+  // right where the useful part was). These logs stay on the server, access-controlled, not
+  // customer-facing — still capped, just generously, not withheld-by-default short.
+  if (typeof value === 'string') return value.length > 1000 ? `${value.slice(0, 1000)}…[truncated]` : value;
+  // Was a blanket withhold before — now logged too (size-capped, same reasoning as the string
+  // case above: these are internal, access-controlled logs, and an object detail is exactly where
+  // Bitsflow's real validation errors (field-by-field) tend to live.
+  try {
+    const json = JSON.stringify(value);
+    return json.length > 1000 ? `${json.slice(0, 1000)}…[truncated]` : value;
+  } catch {
+    return '[object could not be serialized for logging]';
+  }
 }
 
 async function requestOnce<T>(method: 'GET' | 'POST', path: string, body: unknown, opts: { token?: string } | undefined, attempt: number): Promise<T> {

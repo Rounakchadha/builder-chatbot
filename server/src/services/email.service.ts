@@ -173,6 +173,9 @@ class RealEmailService implements EmailService {
         html: buildHtml(input),
         attachments: [{ filename: 'finfinity-logo.svg', content: FINFINITY_LOGO_SVG, cid: 'finfinity-logo', contentType: 'image/svg+xml' }],
       });
+      // Was never logged at all on success — no way to confirm a real send actually happened
+      // without checking the RM's own inbox. Masked, not full email, still kept out of logs.
+      logger.info({ event: 'rm_summary_email_sent', rmEmailDomain: input.rm.email.split('@')[1], product: input.product, leadId: input.leadId }, 'RM summary email sent');
       return true;
     } catch (err) {
       logger.error({ err, event: 'rm_summary_email_failed', rmEmail: input.rm.email, product: input.product }, 'failed to send RM summary email');
