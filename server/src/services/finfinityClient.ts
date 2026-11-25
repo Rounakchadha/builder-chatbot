@@ -75,7 +75,11 @@ async function throwTracked(path: string, message: string, code: string, detail:
 // not "CIBIL_QUESTION_QUEUE". The question/OTP challenge data was right there in the response (same
 // as the CIBIL_QUESTION_QUEUE case), but this threw anyway since that exact string was never in the
 // allowlist — blocking the bureau step outright with a generic "trouble reaching services" error.
-const SUCCESS_FLAVORED_ERROR_CODES = new Set(['CUST_NOT_EXIST', 'CIBIL_QUESTION_QUEUE', 'OTP_IDM_Email_Queue']);
+// Bug fixed 2026-11-25, caught BEFORE it hit a real customer this time — Bitsflow's own confirmed
+// error-code list for validatebureau's resendOTP:true path (yesterday's resend fix) returns
+// "OTP_RESEND" on success ("OTP Resent Successfully") — the exact same success-flavored-error
+// pattern as OTP_IDM_Email_Queue, just never added here when that resend code shipped.
+const SUCCESS_FLAVORED_ERROR_CODES = new Set(['CUST_NOT_EXIST', 'CIBIL_QUESTION_QUEUE', 'OTP_IDM_Email_Queue', 'OTP_RESEND']);
 
 // A hung real API call must never hang the whole conversation turn — 10s is generous enough for
 // any of these endpoints while still failing fast enough that the customer gets a "try again"
