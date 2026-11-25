@@ -13,10 +13,13 @@ export class ApiError extends Error {
   }
 }
 
-// 15s, not the browser's unbounded default — these are chat-step calls (a few hundred bytes), not
-// uploads, so a hung connection should surface as a retryable error well before a customer gives up
-// staring at a spinner.
-const DEFAULT_TIMEOUT_MS = 15_000;
+// Bumped 15s -> 25s, 2026-11-25: real UAT case (Sparsh's test) showed the widget's own generic
+// "something went wrong" fatal error even though the server was still working correctly — a chat
+// step that internally hits getcustomeroffers (10s timeout + one retry = ~20-22s worst case, already
+// handled server-side as a graceful "no offers" result) took longer than this client timeout, so the
+// browser aborted the request before the server's own valid response ever arrived. 25s covers that
+// known worst case with headroom, same value already used for select-offer's own timeout.
+const DEFAULT_TIMEOUT_MS = 25_000;
 
 async function postJson<T>(url: string, body: unknown, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<T> {
   const controller = new AbortController();
