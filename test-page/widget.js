@@ -207,7 +207,7 @@
         <div class="la-result-grid">
           <div><small>Product</small><strong>${a.product}</strong></div>
           <div><small>Loan type</small><strong>${a.loanType}</strong></div>
-          ${a.creditScore?`<div><small>CIBIL score</small><strong>${a.creditScore}</strong></div>`:""}
+          ${a.creditScore?`<div><small>${a.bureauSource==="experian"?"Experian":"CIBIL"} score</small><strong>${a.creditScore}</strong></div>`:""}
           ${a.segment?`<div><small>Segment</small><strong>${a.segment}</strong></div>`:""}
           ${a.propertyType?`<div><small>Property type</small><strong>${a.propertyType}</strong></div>`:""}
           ${a.collateralType?`<div><small>Collateral type</small><strong>${a.collateralType}</strong></div>`:""}
