@@ -518,7 +518,14 @@ async function computeEligibilityPayload(
   const propertyValue = a.propertyValue as number | undefined;
   let propertyCappedEligibilityLakh: number | undefined;
   if (propertyValue && financialEligibilityLakh !== undefined) {
-    const capLakh = outcome.propertyBasedEligibilityLakh ?? (product === 'Home loan' ? 0.8 : 0.65) * (propertyValue / 100000);
+    // Bug fixed 2026-11-25 (real customer, Sparsh's test: showed ₹0 max eligibility) — Bitsflow's
+    // real final_elig_prop_based can itself come back as a literal 0 (seen live for a Bungalow
+    // property type), not just undefined/missing. `??` only treats undefined as "not provided", so
+    // a real 0 slipped through as if it were a genuine cap, zeroing out the whole headline figure
+    // instead of falling back to our own placeholder — a real cap of exactly ₹0 is never plausible
+    // for an eligible applicant, so treat it the same as "not provided" rather than trusting it.
+    const realCap = outcome.propertyBasedEligibilityLakh;
+    const capLakh = realCap && realCap > 0 ? realCap : (product === 'Home loan' ? 0.8 : 0.65) * (propertyValue / 100000);
     propertyCappedEligibilityLakh = Number(Math.min(financialEligibilityLakh, capLakh).toFixed(1));
   }
 
