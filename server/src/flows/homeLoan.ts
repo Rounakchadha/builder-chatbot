@@ -109,6 +109,59 @@ async function generateBureauWithExperianFallback(input: Parameters<typeof realB
   }
 }
 
+// Confirmed with Bitsflow, 2026-11-25 — Experian's own "this isn't the right number" signal is
+// error_code 404, with the correct number embedded right in the message (e.g. "Kindly use this
+// mobile number for login: XXXXXXX123"). Parsed out so the next step can show it to the customer
+// as a hint — they still have to type their own number themselves; this is never trusted as a
+// complete, directly-usable number (it's commonly partially masked, and auto-filling/auto-trusting
+// a bureau's own suggestion without the customer confirming it would be a real identity risk).
+const EXPERIAN_WRONG_NUMBER_PATTERN = /Kindly use this mobile number for login:\s*([\dX]+)/i;
+
+interface BureauWrongNumberResult {
+  bureauWrongNumberHint: string;
+  [key: string]: unknown;
+}
+type GenerateBureauOutcome =
+  | {
+      bureauRealType: 'CIBIL';
+      bureauRealCustomerId: number;
+      bureauRealOtpSessionId: string;
+      bureauRealQuestionKey: string;
+      bureauRealAnswerKey: string;
+      bureauRealChallengeGuid: string;
+    }
+  | { bureauRealType: 'EXPERIAN'; bureauRealCustomerId: number; bureauRealOtpSessionId: string }
+  | BureauWrongNumberResult;
+
+function isBureauWrongNumberResult(result: GenerateBureauOutcome): result is BureauWrongNumberResult {
+  return 'bureauWrongNumberHint' in result;
+}
+
+/** Shared by triggerBureauRealFound/triggerBureauRealNotFound AND bureauMobileCorrection (the
+ * retry after a wrong-number correction) — same call, same CIBIL→Experian fallback, same
+ * wrong-number detection, used from all three places so none of them can drift out of sync. */
+async function runGenerateBureau(input: Parameters<typeof realBureauApi.generateBureau>[0]): Promise<GenerateBureauOutcome> {
+  try {
+    const resp = await generateBureauWithExperianFallback(input);
+    return resp.bureau_type === 'CIBIL'
+      ? {
+          bureauRealType: 'CIBIL',
+          bureauRealCustomerId: resp.customer_id,
+          bureauRealOtpSessionId: resp.otp_session_id,
+          bureauRealQuestionKey: resp.questionKey,
+          bureauRealAnswerKey: resp.answerKey,
+          bureauRealChallengeGuid: resp.ChallengeConfigGUID,
+        }
+      : { bureauRealType: 'EXPERIAN', bureauRealCustomerId: resp.customer_id, bureauRealOtpSessionId: resp.otp_session_id };
+  } catch (err) {
+    if (err instanceof FinfinityApiError && err.code === '404') {
+      const match = EXPERIAN_WRONG_NUMBER_PATTERN.exec(err.message);
+      if (match) return { bureauWrongNumberHint: match[1] };
+    }
+    throw err;
+  }
+}
+
 /** Business Loan isn't offered to a salaried customer at all (2026-10-17 instruction) — hidden
  * from the 'product' choices outright rather than offered and rejected deeper into its own flow
  * (businessLoan.ts's isSalariedSegment is the defensive backstop for that branch regardless).
@@ -1615,11 +1668,11 @@ export const homeLoanFlow: FlowDefinition = {
       id: 'triggerBureauRealFound',
       type: 'apiFetch',
       progressLabel: 'Verifying identity',
-      isApplicable: (ctx) => ctx.answers.dedupeFound === true && !ctx.answers.creditScore && realBureauFlowEnabled && isIndividualPan(ctx.answers.pan as string | undefined),
+      isApplicable: (ctx) => ctx.answers.dedupeFound === true && !ctx.answers.creditScore && realBureauFlowEnabled && !ctx.answers.bureauWrongNumberHint && isIndividualPan(ctx.answers.pan as string | undefined),
       botMessage: () => null,
       input: () => ({ type: 'none' }),
       onAnswer: async (_parsed, ctx) => {
-        const resp = await generateBureauWithExperianFallback({
+        return runGenerateBureau({
           pan: ctx.answers.pan as string,
           phoneNumber: ctx.answers.mobile as string,
           officialEmail: ctx.answers.email as string,
@@ -1627,23 +1680,52 @@ export const homeLoanFlow: FlowDefinition = {
           applicantTypeKey: mapSegmentToHlEmploymentType(ctx.answers.segment as string | undefined),
           token: ctx.answers.finfinityAccessToken as string,
         });
-        return resp.bureau_type === 'CIBIL'
-          ? {
-              bureauRealType: 'CIBIL' as const,
-              bureauRealCustomerId: resp.customer_id,
-              bureauRealOtpSessionId: resp.otp_session_id,
-              bureauRealQuestionKey: resp.questionKey,
-              bureauRealAnswerKey: resp.answerKey,
-              bureauRealChallengeGuid: resp.ChallengeConfigGUID,
-            }
-          : { bureauRealType: 'EXPERIAN' as const, bureauRealCustomerId: resp.customer_id, bureauRealOtpSessionId: resp.otp_session_id };
+      },
+    },
+    // Confirmed with Bitsflow (2026-11-25): Experian's own 404 ("Kindly use this mobile number for
+    // login: XXXXXXX123") means the number we have doesn't match what the bureau has on file for
+    // this PAN. Direct instruction: let the customer re-enter the number, don't re-ask PAN/name
+    // (already confirmed earlier in this same conversation) — just get the right number and
+    // continue straight into the normal OTP step below. Shared by both the found and not-found
+    // branches (isApplicable doesn't split on dedupeFound — runGenerateBureau's own fallback logic
+    // and the wrong-number check are identical either way; only which OTP step comes after differs,
+    // and that's still correctly gated by each one's own dedupeFound check).
+    {
+      id: 'bureauMobileCorrection',
+      type: 'mobile',
+      progressLabel: 'Verifying identity',
+      isApplicable: (ctx) => realBureauFlowEnabled && !ctx.answers.creditScore && !!ctx.answers.bureauWrongNumberHint && isIndividualPan(ctx.answers.pan as string | undefined),
+      botMessage: (ctx) => `The mobile number on file with the credit bureau looks different from what you gave us (it ends in ${ctx.answers.bureauWrongNumberHint}) — what's the correct number?`,
+      input: () => ({ type: 'mobile' }),
+      validate: (value) => {
+        const v = (value || '').trim();
+        if (!/^[6-9]\d{9}$/.test(v)) return { ok: false, error: 'Enter a valid 10-digit mobile number.' };
+        return { ok: true, parsed: v };
+      },
+      onAnswer: async (parsed, ctx) => {
+        const a = ctx.answers;
+        const result = await runGenerateBureau({
+          pan: a.pan as string,
+          phoneNumber: parsed as string,
+          officialEmail: a.email as string,
+          pincode: a.pincode as string,
+          applicantTypeKey: mapSegmentToHlEmploymentType(a.segment as string | undefined),
+          token: a.finfinityAccessToken as string,
+        });
+        if (isBureauWrongNumberResult(result)) {
+          // Second wrong-number signal in a row for a number the customer just typed themselves —
+          // not worth looping indefinitely on a guess; a real mismatch this persistent needs a
+          // human, not another retry.
+          throw new Error("We're still unable to verify this number with the credit bureau. Please contact support to continue.");
+        }
+        return { mobile: parsed, bureauWrongNumberHint: undefined, ...result };
       },
     },
     {
       id: 'otpBureauRealFound',
       type: 'otp',
       progressLabel: 'Verifying identity',
-      isApplicable: (ctx) => ctx.answers.dedupeFound === true && !ctx.answers.creditScore && realBureauFlowEnabled && isIndividualPan(ctx.answers.pan as string | undefined),
+      isApplicable: (ctx) => ctx.answers.dedupeFound === true && !ctx.answers.creditScore && realBureauFlowEnabled && !ctx.answers.bureauWrongNumberHint && isIndividualPan(ctx.answers.pan as string | undefined),
       botMessage: (ctx) => `We've sent a 6-digit code to +91 ${maskMobile(ctx.answers.mobile as string)} — entering it gives us your consent to pull your credit bureau report.`,
       input: () => ({ type: 'otp', length: 6 }),
       validate: (value) => {
@@ -1774,11 +1856,11 @@ export const homeLoanFlow: FlowDefinition = {
       id: 'triggerBureauRealNotFound',
       type: 'apiFetch',
       progressLabel: 'Verifying identity',
-      isApplicable: (ctx) => ctx.answers.dedupeFound === false && realBureauFlowEnabled && isIndividualPan(ctx.answers.pan as string | undefined),
+      isApplicable: (ctx) => ctx.answers.dedupeFound === false && realBureauFlowEnabled && !ctx.answers.bureauWrongNumberHint && isIndividualPan(ctx.answers.pan as string | undefined),
       botMessage: () => null,
       input: () => ({ type: 'none' }),
       onAnswer: async (_parsed, ctx) => {
-        const resp = await generateBureauWithExperianFallback({
+        return runGenerateBureau({
           pan: ctx.answers.pan as string,
           phoneNumber: ctx.answers.mobile as string,
           officialEmail: ctx.answers.email as string,
@@ -1786,23 +1868,13 @@ export const homeLoanFlow: FlowDefinition = {
           applicantTypeKey: mapSegmentToHlEmploymentType(ctx.answers.segment as string | undefined),
           token: ctx.answers.finfinityAccessToken as string,
         });
-        return resp.bureau_type === 'CIBIL'
-          ? {
-              bureauRealType: 'CIBIL' as const,
-              bureauRealCustomerId: resp.customer_id,
-              bureauRealOtpSessionId: resp.otp_session_id,
-              bureauRealQuestionKey: resp.questionKey,
-              bureauRealAnswerKey: resp.answerKey,
-              bureauRealChallengeGuid: resp.ChallengeConfigGUID,
-            }
-          : { bureauRealType: 'EXPERIAN' as const, bureauRealCustomerId: resp.customer_id, bureauRealOtpSessionId: resp.otp_session_id };
       },
     },
     {
       id: 'otpBureauRealNotFound',
       type: 'otp',
       progressLabel: 'Verifying identity',
-      isApplicable: (ctx) => ctx.answers.dedupeFound === false && realBureauFlowEnabled && isIndividualPan(ctx.answers.pan as string | undefined),
+      isApplicable: (ctx) => ctx.answers.dedupeFound === false && realBureauFlowEnabled && !ctx.answers.bureauWrongNumberHint && isIndividualPan(ctx.answers.pan as string | undefined),
       botMessage: (ctx) => `We've sent a 6-digit code to +91 ${maskMobile(ctx.answers.mobile as string)} — entering it gives us your consent to pull your credit bureau report.`,
       input: () => ({ type: 'otp', length: 6 }),
       validate: (value) => {
