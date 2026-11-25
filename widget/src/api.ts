@@ -34,7 +34,24 @@ async function postJson<T>(url: string, body: unknown, timeoutMs = DEFAULT_TIMEO
   } finally {
     clearTimeout(timer);
   }
-  if (!res.ok) throw new ApiError(res.status, `Request failed (${res.status})`);
+  if (!res.ok) {
+    // Bug fixed 2026-11-25 (real customer report, Sparsh's own test: "couldn't select this offer"
+    // showed a generic message even though the server had a specific, actionable one — "your session
+    // needs to be refreshed, please restart" — ready to show). This used to always synthesize a
+    // generic "Request failed (status)" message without ever reading the response body, so no
+    // server-provided message — several endpoints already send one as `message`, a few older ones
+    // as `error` — ever reached the caller. Body read is best-effort; a non-JSON or unparseable body
+    // still falls back to the generic message exactly as before.
+    let serverMessage: string | undefined;
+    try {
+      const body = (await res.json()) as { message?: unknown; error?: unknown };
+      if (typeof body.message === 'string') serverMessage = body.message;
+      else if (typeof body.error === 'string' && body.error.includes(' ')) serverMessage = body.error;
+    } catch {
+      // not JSON, or already consumed — fall through to the generic message below
+    }
+    throw new ApiError(res.status, serverMessage ?? `Request failed (${res.status})`);
+  }
   return res.json() as Promise<T>;
 }
 
@@ -130,7 +147,15 @@ export class ChatApi {
  * (429) gets its own wording instead of being lumped in with "something went wrong" (security-review
  * finding, 2026-10-23: a customer behind a shared office/carrier IP who trips the rate limit used to
  * see the exact same generic error as a real server failure, with no hint that waiting would fix it). */
+// Bug fixed 2026-11-25 — this used to always return the generic fallback for anything but a 429,
+// even once postJson started actually carrying the server's own message through. A customer whose
+// session genuinely needed a restart (see postJson's own comment) still only ever saw "couldn't
+// select this offer — try again shortly" and kept retrying the exact same doomed action.
+const GENERIC_API_ERROR_MESSAGES = new Set(['Request timed out', 'Network error']);
 export function describeApiError(err: unknown, fallback: string): string {
   if (err instanceof ApiError && err.status === 429) return "You're sending requests too fast — please wait a moment and try again.";
+  if (err instanceof ApiError && err.message && !GENERIC_API_ERROR_MESSAGES.has(err.message) && !/^Request failed \(\d+\)$/.test(err.message)) {
+    return err.message;
+  }
   return fallback;
 }

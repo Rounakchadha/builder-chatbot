@@ -822,6 +822,15 @@ export async function chatRoutes(app: FastifyInstance) {
     const token = ctx.answers.finfinityAccessToken as string | undefined;
     let leadId = payload.leadId;
     let rm: { name: string; phone: string; email: string } | undefined;
+    // Bug fixed 2026-11-25 (real customer report, Sparsh's own test: "couldn't select this offer",
+    // 3 identical failures in a row) — this whole block had no try/catch at all. finfinityAccessToken
+    // deliberately never survives a Redis TTL expiry (see session.service.ts's NEVER_PERSIST_KEYS) —
+    // a customer who sits on the eligibility screen for more than the session's idle window before
+    // picking a lender loses it entirely, and the real call below then fails with a clean, already-
+    // written "Your session needs to be refreshed" message (finfinityClient.ts's own 401 handling) —
+    // except nothing here ever caught it, so it crashed to a bare 500 and the widget showed a generic
+    // "couldn't select this offer" with no indication a restart would fix it.
+    try {
     if (!leadId) {
       // Routed through ensureLeadOnce (2026-10-31 fix, same as every flow's own lead-creation step)
       // instead of calling leadService.createLead directly — reuses an existing real lead for this
@@ -887,6 +896,10 @@ export async function chatRoutes(app: FastifyInstance) {
     }
 
     await leadService.setOfferTenure(leadId, offer.tenureYears * 12, token);
+    } catch (err) {
+      logger.error({ err, event: 'select_offer_failed', conversationId: ctx.conversationId }, 'select-offer failed');
+      return reply.code(502).send({ ok: false, error: 'select_offer_failed', message: resolveErrorText(err) });
+    }
 
     // The explicit "apply with this lender" action — the real submission for Home Loan/LAP/
     // Personal Loan (see editableFields.ts's notSubmitted). Locks the profile panel's edit pencils
