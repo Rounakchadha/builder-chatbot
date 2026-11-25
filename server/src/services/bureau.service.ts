@@ -3,7 +3,7 @@ import { isSandboxPan } from '../config/sandbox';
 import { hashCode } from '../flow-engine/eligibility';
 import { maskPan } from '../lib/crypto';
 import { logger } from '../lib/logger';
-import { finfinityClient } from './finfinityClient';
+import { finfinityClient, FinfinityApiError } from './finfinityClient';
 
 /** Extra identity fields the real CIBIL/Experian pull needs alongside PAN — not used by the mock,
  * which only needs the PAN to generate a deterministic score. `customerId`/`token`, when present,
@@ -140,23 +140,44 @@ export const realBureauApi: RealBureauApi = {
     // /leadflow/validatebureau below — no change needed there). updatebureau's own request shape
     // differs slightly: `email` (not `official_email`) and `campaign_code` (not `pincode` — not
     // needed by this endpoint at all, so `input.pincode` is accepted but intentionally unused here).
-    return finfinityClient
-      .post<GenerateBureauResponse[]>(
-        '/leadflow/updatebureau',
-        {
-          pan: input.pan,
-          phone_number: input.phoneNumber,
-          email: input.officialEmail,
-          campaign_code: env.FINFINITY_CAMPAIGN_CODE,
-          applicant_type_key: input.applicantTypeKey,
-        },
-        { token: input.token, retryOnTransient: false },
-      )
-      .then((results) => {
-        const result = results[0];
-        if (!result) throw new Error('updatebureau returned no data');
-        return result;
-      });
+    const call = () =>
+      finfinityClient
+        .post<GenerateBureauResponse[]>(
+          '/leadflow/updatebureau',
+          {
+            pan: input.pan,
+            phone_number: input.phoneNumber,
+            email: input.officialEmail,
+            campaign_code: env.FINFINITY_CAMPAIGN_CODE,
+            applicant_type_key: input.applicantTypeKey,
+          },
+          { token: input.token, retryOnTransient: false },
+        )
+        .then((results) => {
+          const result = results[0];
+          if (!result) throw new Error('updatebureau returned no data');
+          return result;
+        });
+    try {
+      return await call();
+    } catch (err) {
+      // Bug mitigated 2026-11-25 (real prod data: 1/15 success today, almost every real customer
+      // hitting this) — a known, confirmed Bitsflow crash: calling updatebureau immediately after a
+      // customer record was just created (right after a not-found validateotpv2) races their own
+      // backend's own insert, and it tries to INSERT a second row for the same phone number instead
+      // of finding the one that was just made. Unlike a timeout (where we genuinely don't know if
+      // the first attempt landed, so blindly retrying could double a real action), this is a
+      // definite, named failure — the first attempt did NOT succeed (no otp_session_id came back),
+      // so a retry here can't duplicate anything. A short pause and one retry was confirmed to
+      // clear this exact race in earlier manual testing — wiring that in automatically now instead
+      // of leaving the customer stuck.
+      const isDuplicateKeyRace =
+        err instanceof FinfinityApiError && err.code === 'INVALID_404' && typeof err.detail === 'string' && err.detail.includes('duplicate key value violates unique constraint');
+      if (!isDuplicateKeyRace) throw err;
+      logger.warn({ event: 'bureau_duplicate_key_retry' }, 'updatebureau hit the known customer-just-created race — retrying once after a short pause');
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+      return call();
+    }
   },
   async validateBureauCibil(input) {
     const results = await finfinityClient.post<[ValidateBureauResponse, { access: string; refresh: string }]>(
