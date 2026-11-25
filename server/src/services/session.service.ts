@@ -5,7 +5,10 @@ import { prisma } from '../lib/prisma';
 import { redis } from '../lib/redis';
 import { encryptPii, decryptPii } from '../lib/crypto';
 
-const SESSION_TTL_SECONDS = 10 * 60; // sliding window — "context not wasted" for a short return visit
+// Bumped 10min -> 30min, 2026-11-25: real customer lost their access token (and got a confusing
+// select-offer failure) just from comparing lender offers before picking one — 10 min wasn't enough
+// thinking time. Still sliding/idle-based, same security model, just a more realistic window.
+const SESSION_TTL_SECONDS = 30 * 60;
 
 // Security-review finding, 2026-10-23: Postgres-rehydration below had no age cutoff at all — a
 // `sessionToken` from months ago, leaked however (a shared/public device, a logged URL, a browser
