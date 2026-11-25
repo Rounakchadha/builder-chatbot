@@ -97,7 +97,10 @@ function bureauLabel(source: unknown): string {
 // smoothly" signal — direct instruction, 2026-11-25, to treat all 3 the same way rather than build
 // a distinct flow for OTP_ALTERNATE_MOBILE specifically (unconfirmed whether it even carries a
 // corrected mobile number the way Experian's own 404 does).
-const CIBIL_FALLBACK_CODES = new Set(['CIBIL_NOT_FOUND', 'NO_HISTORY', 'OTP_ALTERNATE_MOBILE']);
+// 'NOT_FOUND' added 2026-11-25 (real prod case, Sparsh's test — Tara Gupta's profile): same "no
+// CIBIL record for this PAN" intent as CIBIL_NOT_FOUND, just a different code string Bitsflow sent
+// this time — without it, this case threw immediately instead of trying Experian next.
+const CIBIL_FALLBACK_CODES = new Set(['CIBIL_NOT_FOUND', 'NO_HISTORY', 'OTP_ALTERNATE_MOBILE', 'NOT_FOUND']);
 
 /** Shared by both triggerBureauRealFound and triggerBureauRealNotFound — same call, same fallback,
  * just gated differently by dedupeFound. Retries exactly once: if CIBIL fails with one of the 3
