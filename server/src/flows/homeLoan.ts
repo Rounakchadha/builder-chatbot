@@ -1159,9 +1159,25 @@ export const homeLoanFlow: FlowDefinition = {
           if (!ctx.answers.name && identity.name) patch.name = identity.name;
           if (!ctx.answers.dob && identity.dob) patch.dob = identity.dob;
           if (!ctx.answers.gender && identity.gender) patch.gender = identity.gender;
-          if (patch.name || patch.dob) {
+          // Confirmed 2026-11-26: updatecustomerv3 rejects dob (INVALID_REQUEST, every single time —
+          // see finfinityClient logs). Direct instruction: don't send name/dob at all — Bitsflow
+          // derives and stores both themselves, server-side, the moment a pan is set on the customer
+          // record, same as our own panService.lookup just did locally. Sending the exact field
+          // combination confirmed working elsewhere (syncLeadFinancials' own updateCustomer call,
+          // homeLoan.ts:677) rather than pan alone, since that's the only shape actually proven to
+          // succeed — pan in isolation was never tested.
+          if (ctx.answers.pan) {
             void dedupeService
-              .updateCustomer(ctx.answers.remoteCustomerId as number | undefined, { name: patch.name as string | undefined, dob: patch.dob as string | undefined }, ctx.answers.finfinityAccessToken as string | undefined)
+              .updateCustomer(
+                ctx.answers.remoteCustomerId as number | undefined,
+                {
+                  pan: ctx.answers.pan as string,
+                  email: ctx.answers.email as string | undefined,
+                  pincode: ctx.answers.pincode as string | undefined,
+                  segment: ctx.answers.segment as string | undefined,
+                },
+                ctx.answers.finfinityAccessToken as string | undefined,
+              )
               .catch((err) => logger.error({ err, conversationId: ctx.conversationId }, 'identity backfill: updateCustomer sync failed — continuing without it'));
           }
         } catch (err) {
@@ -1595,10 +1611,10 @@ export const homeLoanFlow: FlowDefinition = {
         if (v.length < 2) return { ok: false, error: 'Enter your full name.' };
         return { ok: true, parsed: v };
       },
-      onAnswer: async (parsed, ctx) => {
-        void dedupeService
-          .updateCustomer(ctx.answers.remoteCustomerId as number | undefined, { name: parsed as string }, ctx.answers.finfinityAccessToken as string | undefined)
-          .catch((err) => logger.error({ err, conversationId: ctx.conversationId }, 'nameAsk: updateCustomer sync failed — continuing without it'));
+      onAnswer: async (parsed) => {
+        // Direct instruction (2026-11-26): never send name/dob to updatecustomerv3 — confirmed it
+        // rejects dob outright (INVALID_REQUEST, every time), and Bitsflow derives/stores both
+        // themselves server-side off the pan instead. Kept locally only.
         return { name: parsed, fullName: parsed };
       },
     },
@@ -1625,10 +1641,10 @@ export const homeLoanFlow: FlowDefinition = {
         if (calcAge(iso) > 100) return { ok: false, error: "That doesn't look right — enter your actual date of birth." };
         return { ok: true, parsed: iso };
       },
-      onAnswer: async (parsed, ctx) => {
-        void dedupeService
-          .updateCustomer(ctx.answers.remoteCustomerId as number | undefined, { dob: parsed as string }, ctx.answers.finfinityAccessToken as string | undefined)
-          .catch((err) => logger.error({ err, conversationId: ctx.conversationId }, 'dobAsk: updateCustomer sync failed — continuing without it'));
+      onAnswer: async (parsed) => {
+        // Direct instruction (2026-11-26): never send name/dob to updatecustomerv3 — confirmed it
+        // rejects dob outright (INVALID_REQUEST, every time), and Bitsflow derives/stores both
+        // themselves server-side off the pan instead. Kept locally only.
         return { dob: parsed };
       },
     },

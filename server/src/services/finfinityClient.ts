@@ -81,10 +81,12 @@ async function throwTracked(path: string, message: string, code: string, detail:
 // pattern as OTP_IDM_Email_Queue, just never added here when that resend code shipped.
 const SUCCESS_FLAVORED_ERROR_CODES = new Set(['CUST_NOT_EXIST', 'CIBIL_QUESTION_QUEUE', 'OTP_IDM_Email_Queue', 'OTP_RESEND']);
 
-// A hung real API call must never hang the whole conversation turn — 10s is generous enough for
-// any of these endpoints while still failing fast enough that the customer gets a "try again"
-// instead of an endlessly spinning chat.
-const REQUEST_TIMEOUT_MS = 10_000;
+// A hung real API call must never hang the whole conversation turn — but 10s was proving too
+// tight for real Bitsflow endpoints (confirmed live, 2026-11-26: create_anacity_lead legitimately
+// took >10s for a real LAS lead while every HL call that same day answered in 1-2s) — a slow-but-
+// genuine response was being killed and shown to the customer as a failure. Raised to 25s, same
+// ceiling already used for the widget's own client-side request timeout (widget/src/api.ts).
+const REQUEST_TIMEOUT_MS = 25_000;
 
 // One retry, after a short pause, and ONLY for failures where we genuinely never got a response
 // back (a timeout, a dropped connection, or their server erroring at the HTTP level) — UAT has
