@@ -36,6 +36,13 @@ export interface EligibilityResult {
    * in lakh — same figure repeated on every lender in a live response, so just the first one found.
    * Undefined for the mock, or if a future real response ever omits it. */
   propertyBasedEligibilityLakh?: number;
+  /** The true income/FOIR-based eligibility, ignoring the property entirely — from
+   * getcustomeroffers' applicant_list[0].eligibility_amount. NOT the same as offers[0].amountLakh:
+   * every lender's own eligibility_amount in final_lender_list is already property-capped (confirmed
+   * live, 2026-11-26, Sparsh's own test — every one of 17 lenders showed the same capped 44L figure
+   * while applicant_list showed the real uncapped 69L), so that field can never be used as the
+   * "financial eligibility" headline. Undefined for the mock, or if a real response omits it. */
+  incomeBasedEligibilityLakh?: number;
 }
 
 export interface EligibilityService {
@@ -78,6 +85,11 @@ interface RejectedLenderOffer {
   lender_name: string;
   rejection_reason: string;
 }
+/** The applicant's own income/FOIR-based eligibility — NOT capped by the property, unlike every
+ * lender's own eligibility_amount in final_lender_list (see EligibilityResult.incomeBasedEligibilityLakh). */
+interface ApplicantListEntry {
+  eligibility_amount: number;
+}
 /** Confirmed live (2026-09-23): the real payload is nested one level deeper than the docs' example
  * showed — the lender lists live at `data[0].data[0]`, not `data[0]`. finfinityClient already
  * unwraps the outer envelope, so this type is that OUTER array's element shape; `result[0].data[0]`
@@ -86,6 +98,7 @@ interface GetCustomerOffersHlResponse {
   data: Array<{
     final_lender_list: FinalLenderOffer[];
     rejected_lender_list: RejectedLenderOffer[];
+    applicant_list?: ApplicantListEntry[];
     exec_status: string;
   }>;
   error_msg: string;
@@ -190,6 +203,7 @@ class RealEligibilityService implements EligibilityService {
     // Same figure repeated on every lender in the live example that introduced this field — just
     // take the first one that actually has it, rather than assuming every lender always will.
     const propertyBasedEligLakh = data.final_lender_list.find((l) => l.final_elig_prop_based !== undefined)?.final_elig_prop_based;
+    const incomeBasedEligAmount = data.applicant_list?.[0]?.eligibility_amount;
     const best = offers[0];
     return {
       eligible: true,
@@ -198,6 +212,7 @@ class RealEligibilityService implements EligibilityService {
       loanAmountLakh: String(best.amountLakh),
       offers,
       propertyBasedEligibilityLakh: propertyBasedEligLakh !== undefined ? propertyBasedEligLakh / 100000 : undefined,
+      incomeBasedEligibilityLakh: incomeBasedEligAmount !== undefined ? incomeBasedEligAmount / 100000 : undefined,
     };
   }
 }

@@ -523,14 +523,18 @@ async function computeEligibilityPayload(
     outcome = { eligible: false, emi: 0, tenureYears: 0, loanAmountLakh: '0' };
   }
 
-  // Financial eligibility (pure income/FOIR, ignoring the property entirely) is always the best
-  // offer's amount. If a property value is known, it's also capped — by Bitsflow's own real
-  // property-based figure (`final_elig_prop_based`, live since 2026-11-20) when getcustomeroffers
-  // supplies one, since that's an actual policy number instead of a guess; falls back to our own
-  // placeholder LTV % only when it doesn't (e.g. LAP, or an older/mock response). Note this still
-  // only ever caps this one headline figure, never each lender's own (still-uncapped) amountLakh —
-  // Bitsflow's real response doesn't apply this cap to individual lenders' offers either.
-  const financialEligibilityLakh = outcome.offers?.[0]?.amountLakh;
+  // Financial eligibility (pure income/FOIR, ignoring the property entirely) used to be read off
+  // the best offer's own amountLakh — WRONG, confirmed live 2026-11-26 (real customer, Sparsh's own
+  // test): every one of getcustomeroffers' 17 real lenders already has its own eligibility_amount
+  // property-capped (all 17 showed the identical capped 44L figure, matching final_elig_prop_based)
+  // — Bitsflow's real response DOES apply the cap per-lender, contrary to what this comment used to
+  // assume. That made financialEligibilityLakh silently equal propertyCappedEligibilityLakh every
+  // time a property cap actually bound, hiding the real uncapped figure (69L in that same test)
+  // entirely. The true uncapped number lives separately, in getcustomeroffers'
+  // applicant_list[0].eligibility_amount (see eligibility.service.ts's incomeBasedEligibilityLakh) —
+  // falls back to the old best-offer reading only for the mock/placeholder path, which has no such
+  // field at all.
+  const financialEligibilityLakh = outcome.incomeBasedEligibilityLakh ?? outcome.offers?.[0]?.amountLakh;
   const propertyValue = a.propertyValue as number | undefined;
   let propertyCappedEligibilityLakh: number | undefined;
   if (propertyValue && financialEligibilityLakh !== undefined) {
