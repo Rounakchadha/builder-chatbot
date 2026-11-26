@@ -519,7 +519,11 @@ export function renderResultCard(result: EligibilityResultPayload, apiBase: stri
             // "if property not selected then show normal financial eli only").
             const propertySelected = result.propertyCappedEligibilityLakh !== undefined;
             const headlineAmountLakh = propertySelected && o.propertyCappedAmountLakh !== undefined ? Math.min(o.amountLakh, o.propertyCappedAmountLakh) : o.amountLakh;
-            const showLenderFinancialStat = propertySelected && o.propertyCappedAmountLakh !== undefined && headlineAmountLakh !== o.amountLakh;
+            // Always shown once a property is known, same as the top card's own showFinancialStat
+            // (no inequality check there either) — even when it happens to equal the headline, per
+            // direct instruction to match the top card's convention exactly (2026-11-26, confirmed
+            // live: real Bitsflow responses often cap every lender to the identical figure).
+            const showLenderFinancialStat = propertySelected && o.propertyCappedAmountLakh !== undefined;
             const totalPayable = o.emi * o.tenureYears * 12;
             const totalInterest = Math.max(0, totalPayable - headlineAmountLakh * 100000);
             return `
