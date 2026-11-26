@@ -1100,9 +1100,19 @@ export const homeLoanFlow: FlowDefinition = {
         // bureau-consent OTP gets skipped entirely below; not found just means the customer
         // verifies it fresh, same as ever.
         let creditScore = match.creditScore;
+        // Bug fixed 2026-11-26 (real report, Sparsh's own profile: shown "CIBIL score" for a
+        // known-Experian score) — when the cache is what actually supplies creditScore (searchcustomer
+        // itself had none this time), bureauSource below still only ever read match.bureauSource,
+        // which stays undefined in that case — bureauLabel() then silently defaults undefined to
+        // "CIBIL", mislabeling a real Experian score. Carry the cache's OWN bureauSource along with
+        // its creditScore so the two never get sourced from two different places.
+        let bureauSource = match.bureauSource;
         if (!creditScore) {
           const cached = await customerService.findCachedBureauScore(hmacLookup(ctx.answers.mobile as string));
-          if (cached) creditScore = cached.creditScore;
+          if (cached) {
+            creditScore = cached.creditScore;
+            bureauSource = cached.bureauSource as 'bureau' | 'experian' | undefined;
+          }
         }
 
         return {
@@ -1120,7 +1130,7 @@ export const homeLoanFlow: FlowDefinition = {
           // Captured for later — not yet acted on anywhere in the flow (still deciding how
           // needsBureauRefresh/needsBureauConsent should change behavior; see DedupeMatch's doc
           // comment in dedupe.service.ts).
-          bureauSource: match.bureauSource,
+          bureauSource,
           bureauFetchDate: match.bureauFetchDate,
           needsBureauRefresh: match.needsBureauRefresh,
           needsBureauConsent: match.needsBureauConsent,
