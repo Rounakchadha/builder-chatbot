@@ -1010,7 +1010,7 @@ export async function chatRoutes(app: FastifyInstance) {
     if (!state) return reply.code(404).send({ error: 'session_not_found' });
 
     const ctx = toCtx(state, req.ip, req.headers['user-agent']);
-    const fields = PROFILE_FIELDS.map((f) => ({ key: f.key, label: f.label, editable: f.editable(ctx), value: f.format(ctx) })).filter((f) => f.value !== '');
+    const fields = PROFILE_FIELDS.map((f) => ({ key: f.key, label: typeof f.label === 'function' ? f.label(ctx) : f.label, editable: f.editable(ctx), value: f.format(ctx) })).filter((f) => f.value !== '');
     return reply.send({ fields });
   });
 

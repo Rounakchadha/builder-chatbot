@@ -89,7 +89,12 @@ export function isFieldEditableNow(ctx: StepContext, key: string): boolean {
  */
 export interface ProfileField {
   key: string;
-  label: string;
+  /** A plain string for every field except creditScore, which needs the real bureau source
+   * (CIBIL vs Experian) — a function here lets that one field compute its own label per-customer
+   * instead of a permanently-wrong hardcoded "CIBIL score" (bug fixed 2026-11-26: the profile
+   * side-panel kept saying "CIBIL score" even for an Experian pull — the main result card already
+   * got this fix on 2026-11-25, this panel is a separate render path that was missed). */
+  label: string | ((ctx: StepContext) => string);
   editable: (ctx: StepContext) => boolean;
   format: (ctx: StepContext) => string;
 }
@@ -107,7 +112,12 @@ export const PROFILE_FIELDS: ProfileField[] = [
   { key: 'name', label: 'Name', editable: () => false, format: (ctx) => (ctx.answers.name as string) ?? '' },
   { key: 'mobile', label: 'Mobile', editable: () => false, format: (ctx) => (ctx.answers.mobile ? `+91 ${maskMobile(ctx.answers.mobile as string)}` : '') },
   { key: 'pan', label: 'PAN', editable: () => false, format: (ctx) => (ctx.answers.pan ? maskPan(ctx.answers.pan as string) : '') },
-  { key: 'creditScore', label: 'CIBIL score', editable: () => false, format: (ctx) => (ctx.answers.creditScore ? String(ctx.answers.creditScore) : '') },
+  {
+    key: 'creditScore',
+    label: (ctx) => (ctx.answers.bureauSource === 'experian' ? 'Experian score' : 'CIBIL score'),
+    editable: () => false,
+    format: (ctx) => (ctx.answers.creditScore ? String(ctx.answers.creditScore) : ''),
+  },
   ...EDITABLE_FIELDS.map((f) => ({ key: f.key, label: f.label, editable: f.editableFor, format: f.format })),
   { key: 'blBusinessName', label: 'Business name', editable: () => false, format: (ctx) => (ctx.answers.blBusinessName as string) ?? '' },
   { key: 'blBusinessType', label: 'Entity type', editable: () => false, format: (ctx) => (ctx.answers.blBusinessType as string) ?? '' },
