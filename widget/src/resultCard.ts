@@ -511,9 +511,15 @@ export function renderResultCard(result: EligibilityResultPayload, apiBase: stri
           .map((o) => {
             // Headline is this lender's own final (property-capped) amount, same split already
             // used for the top summary card — financial eligibility (o.amountLakh) moves to a
-            // secondary line instead of being the headline (2026-11-26 direct instruction).
-            const headlineAmountLakh = o.propertyCappedAmountLakh !== undefined ? Math.min(o.amountLakh, o.propertyCappedAmountLakh) : o.amountLakh;
-            const showLenderFinancialStat = o.propertyCappedAmountLakh !== undefined && headlineAmountLakh !== o.amountLakh;
+            // secondary line instead of being the headline (2026-11-26 direct instruction). Gated
+            // on result.propertyCappedEligibilityLakh (same flag the top card already uses, only
+            // set once a property value is actually known) rather than just the raw per-lender
+            // field's presence — Bitsflow can still send final_elig_prop_based even when no
+            // property was ever identified, and capping against it then would be wrong (2026-11-26:
+            // "if property not selected then show normal financial eli only").
+            const propertySelected = result.propertyCappedEligibilityLakh !== undefined;
+            const headlineAmountLakh = propertySelected && o.propertyCappedAmountLakh !== undefined ? Math.min(o.amountLakh, o.propertyCappedAmountLakh) : o.amountLakh;
+            const showLenderFinancialStat = propertySelected && o.propertyCappedAmountLakh !== undefined && headlineAmountLakh !== o.amountLakh;
             const totalPayable = o.emi * o.tenureYears * 12;
             const totalInterest = Math.max(0, totalPayable - headlineAmountLakh * 100000);
             return `
