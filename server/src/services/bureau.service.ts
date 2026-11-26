@@ -127,21 +127,6 @@ interface ValidateBureauResponse {
   bureauType: 'CIBIL' | 'EXPERIAN';
 }
 
-// Bug fixed 2026-11-26 (real prod case, Raman's test): confirmed live that validatebureau's own
-// success envelope can carry bureauScore: -1 as a genuine "checked, nothing on file" sentinel (not
-// an error response at all — error_code was empty, HTTP 200) — this used to be trusted as a real
-// score with no guard, so a customer would see "Your Experian score is -1" and that same -1 would
-// get sent straight into getcustomeroffers as their real bureau_score. Any non-positive value here
-// means the same thing a clean "no history" response would: there's no usable score to show or pass
-// downstream, so this throws the SAME kind of error the "no credit history" cases already use.
-function assertValidScore(rawScore: number | string, source: 'bureau' | 'experian', tokenPair: { access: string; refresh: string } | undefined): BureauPull {
-  const score = Number(rawScore);
-  if (!(score > 0)) {
-    throw new FinfinityApiError('No credit history found', 'NO_VALID_SCORE', rawScore);
-  }
-  return { creditScore: score, source, accessToken: tokenPair?.access, refreshToken: tokenPair?.refresh };
-}
-
 export const realBureauApi: RealBureauApi = {
   // retryOnTransient: false throughout — generatebureau starts a real bureau session (CIBIL
   // question or Experian OTP) and validatebureau consumes an answer/OTP attempt against it;
@@ -209,7 +194,7 @@ export const realBureauApi: RealBureauApi = {
       },
       { token: input.token, retryOnTransient: false },
     );
-    return assertValidScore(results[0].bureauScore, 'bureau', results[1]);
+    return { creditScore: Number(results[0].bureauScore), source: 'bureau', accessToken: results[1]?.access, refreshToken: results[1]?.refresh };
   },
   async validateBureauExperian(input) {
     const results = await finfinityClient.post<[ValidateBureauResponse, { access: string; refresh: string }]>(
@@ -223,7 +208,7 @@ export const realBureauApi: RealBureauApi = {
       },
       { token: input.token, retryOnTransient: false },
     );
-    return assertValidScore(results[0].bureauScore, 'experian', results[1]);
+    return { creditScore: Number(results[0].bureauScore), source: 'experian', accessToken: results[1]?.access, refreshToken: results[1]?.refresh };
   },
   async resendBureauOtp(input) {
     await finfinityClient.post(
