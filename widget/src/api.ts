@@ -17,9 +17,19 @@ export class ApiError extends Error {
 // "something went wrong" fatal error even though the server was still working correctly — a chat
 // step that internally hits getcustomeroffers (10s timeout + one retry = ~20-22s worst case, already
 // handled server-side as a graceful "no offers" result) took longer than this client timeout, so the
-// browser aborted the request before the server's own valid response ever arrived. 25s covers that
-// known worst case with headroom, same value already used for select-offer's own timeout.
-const DEFAULT_TIMEOUT_MS = 25_000;
+// browser aborted the request before the server's own valid response ever arrived.
+//
+// Bumped 25s -> 90s, 2026-11-26: the server's own per-call Finfinity timeout (finfinityClient.ts's
+// REQUEST_TIMEOUT_MS) was separately raised 10s -> 25s the same day — real Bitsflow endpoints were
+// genuinely taking longer than 10s to respond (confirmed live), not actually failing. That alone
+// made the old 25s client timeout stale, but the bigger miss: the 'result' step's single request
+// can chain MULTIPLE real Finfinity calls sequentially, not just one — confirmed live the same day
+// (Sparsh's own real test): create_anacity_lead (two instant 502s, then a 22s success) immediately
+// followed by getcustomeroffers (11.3s) totalled ~34s in one customer-facing turn, already past the
+// old 25s client timeout, even though nothing had actually failed — the backend finished seconds
+// later anyway (lead created, real offers computed, CIS webhook sent). 90s gives real headroom for
+// that same chain even if one of those calls needs its own full 25s-timeout-then-retry cycle.
+const DEFAULT_TIMEOUT_MS = 90_000;
 
 async function postJson<T>(url: string, body: unknown, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<T> {
   const controller = new AbortController();
@@ -70,17 +80,21 @@ export class ChatApi {
     // successfully — 200 OK, real RM returned — a fraction of a second AFTER this call's own
     // timeout fired, showing a false "couldn't select" error). Root cause: the underlying Finfinity
     // call (setbrefinanceroffertenure) retries once on a transient failure, each attempt capped at
-    // the server's own 10s timeout — 10s + a ~1s pause + another 10s is a real, legitimate ~21s
-    // worst case, well past the generic 15s default every other call here uses.
+    // the server's own timeout — originally 10s, so 10s + a ~1s pause + another 10s was a real,
+    // legitimate ~21s worst case, well past the generic 15s default every other call here uses.
     //
     // Extended 2026-11-20 (direct instruction: don't surface a "please retry" error on a slow-but-
-    // still-working request — silently wait longer and retry once ourselves). 20s already covers
+    // still-working request — silently wait longer and retry once ourselves). 20s already covered
     // that ~21s worst case almost every time; on the rare case it's still not enough, this retries
     // once more automatically, with no visible change to the customer (the button just keeps
     // reading "Selecting…" the whole time) — a real error only ever shows if BOTH attempts fail.
     // Safe to retry blindly: unlike lead creation, this just re-sets the same tenure on the same
     // lead (setOfferTenure)/re-runs ensureLeadOnce (already dedupes), so a retry can't double-submit.
-    const ATTEMPT_TIMEOUT_MS = 20_000;
+    //
+    // Bumped 20s -> 50s, 2026-11-26, same day and same reason as DEFAULT_TIMEOUT_MS above: the
+    // server's own Finfinity timeout moved 10s -> 25s, so the single-attempt worst case (one real
+    // call + one server-side retry) moved from ~21s to ~51s accordingly.
+    const ATTEMPT_TIMEOUT_MS = 50_000;
     const attempt = () => postJson<{ ok: boolean; error?: string; leadId?: string; rm?: { name: string; phone: string; email: string } }>(
       `${this.baseUrl}/api/chat/select-offer`,
       { sessionToken, lenderName },
