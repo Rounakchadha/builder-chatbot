@@ -1719,12 +1719,25 @@ export const homeLoanFlow: FlowDefinition = {
         const remoteCustomerId = ctx.answers.remoteCustomerId as number | undefined;
         const productCode = PRODUCT_CODE[ctx.answers.product as string];
         if (remoteCustomerId && productCode) {
-          const existing = await realBureauApi.fetchBureauData({
-            customerId: remoteCustomerId,
-            productCode,
-            pan: ctx.answers.pan as string,
-            token: ctx.answers.finfinityAccessToken as string,
-          });
+          // Bug fixed 2026-11-26 (real prod case, Tanvi's LAP test): confirmed live that
+          // fetchbureaudata can come back as a genuine thrown error (error_code
+          // "BUREAU_SCORE_MISSING", "No valid bureau score found for customer") instead of the
+          // clean empty-success shape this was originally built against — with no try/catch here,
+          // that exception crashed the whole step outright instead of falling through to a real
+          // pull, dead-ending a found customer's conversation with no updatebureau ever attempted.
+          // Any failure here means the same thing either way: nothing usable on file yet, so treat
+          // it exactly like a clean "not found" and fall through below.
+          let existing: Awaited<ReturnType<typeof realBureauApi.fetchBureauData>> = null;
+          try {
+            existing = await realBureauApi.fetchBureauData({
+              customerId: remoteCustomerId,
+              productCode,
+              pan: ctx.answers.pan as string,
+              token: ctx.answers.finfinityAccessToken as string,
+            });
+          } catch (err) {
+            logger.warn({ err, event: 'bureau_fetch_failed_falling_through', conversationId: ctx.conversationId }, 'fetchbureaudata failed — treating as no score on file, falling through to a fresh pull');
+          }
           if (existing) return { creditScore: existing.creditScore, bureauSource: existing.source };
         }
         return runGenerateBureau({
