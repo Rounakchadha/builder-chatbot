@@ -1842,6 +1842,12 @@ export const homeLoanFlow: FlowDefinition = {
           if (err instanceof FinfinityApiError && err.code === 'EXCEEDED_ATTEMPTS') {
             throw new Error('Too many incorrect attempts. Please start over.');
           }
+          // 2026-11-26 — the OTP itself was correct here (validatebureau's own guard against a -1
+          // "checked, nothing on file" score, see bureau.service.ts), so "Incorrect OTP" would be a
+          // flatly wrong message for this specific case.
+          if (err instanceof FinfinityApiError && err.code === 'NO_VALID_SCORE') {
+            throw new Error('No credit history was found for this profile.');
+          }
           throw new Error('Incorrect OTP. Please try again.');
         }
         return {
@@ -1990,6 +1996,12 @@ export const homeLoanFlow: FlowDefinition = {
           // "incorrect OTP" for this specific case (too many wrong answers, not just one typo).
           if (err instanceof FinfinityApiError && err.code === 'EXCEEDED_ATTEMPTS') {
             throw new Error('Too many incorrect attempts. Please start over.');
+          }
+          // 2026-11-26 — the OTP itself was correct here (validatebureau's own guard against a -1
+          // "checked, nothing on file" score, see bureau.service.ts), so "Incorrect OTP" would be a
+          // flatly wrong message for this specific case.
+          if (err instanceof FinfinityApiError && err.code === 'NO_VALID_SCORE') {
+            throw new Error('No credit history was found for this profile.');
           }
           throw new Error('Incorrect OTP. Please try again.');
         }
