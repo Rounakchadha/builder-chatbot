@@ -102,16 +102,29 @@ function bureauLabel(source: unknown): string {
 // this time — without it, this case threw immediately instead of trying Experian next.
 const CIBIL_FALLBACK_CODES = new Set(['CIBIL_NOT_FOUND', 'NO_HISTORY', 'OTP_ALTERNATE_MOBILE', 'NOT_FOUND']);
 
+// Real prod case, 2026-11-26 (Tanvi's test): Bitsflow sent the SAME "no CIBIL record" intent under
+// error_code 'INVALID_404' this time, with the actual message literally telling the customer to
+// "Click on Continue to proceed with experian" — but 'INVALID_404' is NOT safe to add to
+// CIBIL_FALLBACK_CODES wholesale, since bureau.service.ts's generateBureau() already reuses that
+// exact same code for the unrelated duplicate-key-race retry (a different real failure that should
+// NOT fall through to Experian). Matching on the message content instead, which only this specific
+// "no CIBIL record" case produces.
+function isCibilNotFoundByMessage(message: string): boolean {
+  const m = message.toLowerCase();
+  return m.includes('unable to locate your information in cibil') || m.includes('proceed with experian');
+}
+
 /** Shared by both triggerBureauRealFound and triggerBureauRealNotFound — same call, same fallback,
  * just gated differently by dedupeFound. Retries exactly once: if CIBIL fails with one of the 3
- * codes above, calling generateBureau() again should come back as Experian instead. If that SECOND
- * attempt also fails, let it throw — caught by chat.ts's generic error handling same as any other
- * real API failure (no bureau score available right now), rather than inventing a third attempt. */
+ * codes above (or the message-based "no CIBIL record" signal above), calling generateBureau() again
+ * should come back as Experian instead. If that SECOND attempt also fails, let it throw — caught by
+ * chat.ts's generic error handling same as any other real API failure (no bureau score available
+ * right now), rather than inventing a third attempt. */
 async function generateBureauWithExperianFallback(input: Parameters<typeof realBureauApi.generateBureau>[0]) {
   try {
     return await realBureauApi.generateBureau(input);
   } catch (err) {
-    if (err instanceof FinfinityApiError && CIBIL_FALLBACK_CODES.has(err.code)) {
+    if (err instanceof FinfinityApiError && (CIBIL_FALLBACK_CODES.has(err.code) || isCibilNotFoundByMessage(err.message))) {
       logger.info({ event: 'bureau_cibil_fallback_to_experian', code: err.code }, 'CIBIL unavailable for this PAN — retrying for Experian');
       return await realBureauApi.generateBureau(input);
     }
