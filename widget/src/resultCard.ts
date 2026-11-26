@@ -466,10 +466,15 @@ export function renderResultCard(result: EligibilityResultPayload, apiBase: stri
   // financial; (3) financial is itself the smaller number (property cap doesn't bind) -> headline
   // IS financial already, so the second stat would just repeat the same number and is hidden).
   const headlineLakh = result.propertyCappedEligibilityLakh ?? best?.amountLakh;
+  // Bug fixed 2026-11-26 (real prod case): comparing the raw numbers directly missed that
+  // propertyCappedEligibilityLakh is rounded server-side (Math.min(...).toFixed(1)) while
+  // financialEligibilityLakh isn't — a genuine Case 3 (97.5288 capped-but-not-really-capped down to
+  // 97.5) read as "different" and wrongly showed a second line for two numbers that display
+  // identically. Compare the formatted strings the customer actually sees instead.
   const showFinancialStat =
     result.propertyCappedEligibilityLakh !== undefined &&
     result.financialEligibilityLakh !== undefined &&
-    result.propertyCappedEligibilityLakh !== result.financialEligibilityLakh;
+    formatAmount(result.propertyCappedEligibilityLakh) !== formatAmount(result.financialEligibilityLakh);
 
   // CIS's exact "la-results"/"la-lender" markup (captured verbatim from personal-suite-updated.html's
   // live results screen, 2026-10-28 "ship it 1:1" pass) — same classes, same structure, same
@@ -527,7 +532,11 @@ export function renderResultCard(result: EligibilityResultPayload, apiBase: stri
             // Corrected 2026-11-26 — same three-case rule as the top card's own showFinancialStat:
             // hidden when this lender's own cap isn't actually the binding number (headline already
             // equals the plain financial amount, so a second identical line would be pointless).
-            const showLenderFinancialStat = propertySelected && o.propertyCappedAmountLakh !== undefined && headlineAmountLakh !== o.amountLakh;
+            // Same formatted-string comparison as the top card's showFinancialStat (2026-11-26) —
+            // keeps both consistent and avoids a near-identical-but-not-bit-equal pair (e.g. a
+            // headline that rounds to the same displayed figure as the raw amount) showing as if
+            // they were two different numbers.
+            const showLenderFinancialStat = propertySelected && o.propertyCappedAmountLakh !== undefined && formatAmount(headlineAmountLakh) !== formatAmount(o.amountLakh);
             const totalPayable = o.emi * o.tenureYears * 12;
             const totalInterest = Math.max(0, totalPayable - headlineAmountLakh * 100000);
             return `
