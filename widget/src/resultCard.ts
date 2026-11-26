@@ -509,24 +509,30 @@ export function renderResultCard(result: EligibilityResultPayload, apiBase: stri
       <div id="lc-lender-list">
         ${offers
           .map((o) => {
+            // Headline is this lender's own final (property-capped) amount, same split already
+            // used for the top summary card — financial eligibility (o.amountLakh) moves to a
+            // secondary line instead of being the headline (2026-11-26 direct instruction).
+            const headlineAmountLakh = o.propertyCappedAmountLakh !== undefined ? Math.min(o.amountLakh, o.propertyCappedAmountLakh) : o.amountLakh;
+            const showLenderFinancialStat = o.propertyCappedAmountLakh !== undefined && headlineAmountLakh !== o.amountLakh;
             const totalPayable = o.emi * o.tenureYears * 12;
-            const totalInterest = Math.max(0, totalPayable - o.amountLakh * 100000);
+            const totalInterest = Math.max(0, totalPayable - headlineAmountLakh * 100000);
             return `
           <details class="la-lender">
             <summary>
               <span class="la-bank-icon" aria-hidden="true">${logoHtml(o.name, apiBase)}</span>
               <span><strong>${o.name}</strong><small>${o.rate}% p.a. · ${o.tenureYears} yr tenure</small></span>
-              <span><strong>${formatAmount(o.amountLakh)}</strong><small>EMI ₹${o.emi.toLocaleString('en-IN')}/mo</small></span>
+              <span><strong>${formatAmount(headlineAmountLakh)}</strong><small>EMI ₹${o.emi.toLocaleString('en-IN')}/mo</small></span>
             </summary>
             <div class="la-lender-body">
               <div class="la-eyebrow">${o.name} — Full breakdown</div>
-              <div class="la-amount">${formatAmount(o.amountLakh, 'full')}</div>
+              <div class="la-amount">${formatAmount(headlineAmountLakh, 'full')}</div>
               <p class="la-small">at ${o.rate}% p.a. over ${o.tenureYears} years</p>
               <div class="la-result-grid">
                 <div><small>Monthly EMI</small><strong>₹${o.emi.toLocaleString('en-IN')}</strong></div>
                 <div><small>Tenure</small><strong>${o.tenureYears} years</strong></div>
                 <div><small>Total payable</small><strong>₹${Math.round(totalPayable).toLocaleString('en-IN')}</strong></div>
                 <div><small>Total interest</small><strong>₹${Math.round(totalInterest).toLocaleString('en-IN')}</strong></div>
+                ${showLenderFinancialStat ? `<div><small>Financial eligibility</small><strong>${formatAmount(o.amountLakh)}</strong></div>` : ''}
               </div>
               ${selectOfferSlotHtml(o)}
             </div>

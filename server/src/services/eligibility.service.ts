@@ -178,6 +178,7 @@ class RealEligibilityService implements EligibilityService {
         isSelectable: l.is_selectable,
         unselectableReason: l.unselectable_reason,
         existingLeadId: l.existing_lead_id,
+        propertyCappedAmountLakh: l.final_elig_prop_based !== undefined ? l.final_elig_prop_based / 100000 : undefined,
       }))
       // Security-review finding, 2026-10-23: this used to trust getcustomeroffers already returned
       // lenders best-first and just took offers[0] — nothing actually guaranteed that ordering.

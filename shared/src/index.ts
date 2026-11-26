@@ -198,6 +198,13 @@ export interface LenderOffer {
   unselectableReason?: string;
   /** The lead id Bitsflow says this customer is already locked to, when isSelectable === false. */
   existingLeadId?: number;
+  /** Real property-based cap from getcustomeroffers' final_elig_prop_based field (2026-11-20),
+   * repeated on THIS lender's own entry (confirmed live, 2026-11-26 — every lender in a real
+   * response carries its own copy, not just a single top-level figure). The card's headline amount
+   * is min(amountLakh, this), with amountLakh shown as the secondary "Financial eligibility" line —
+   * same split already used for the top summary card, just applied per lender now. Undefined for
+   * the mock, LAP, or any older response that predates this field. */
+  propertyCappedAmountLakh?: number;
 }
 
 export interface EligibilityResultPayload {
