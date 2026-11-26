@@ -459,12 +459,17 @@ export function renderResultCard(result: EligibilityResultPayload, apiBase: stri
 
   const offers = result.offers ?? [];
   const best = offers[0];
-  // The property cap (when a property value is known) becomes the headline; the pure
-  // income-based figure is always shown too, but only needs a distinct stat when it differs from
-  // the headline (i.e. once a property is in the picture) — see the user-facing spec: "if the
-  // property is not selected then we will only show financial eligibility."
+  // The property cap (when a property value is known) becomes the headline; the pure income-based
+  // figure is shown as a second stat ONLY when it actually differs from the headline (2026-11-26
+  // direct instruction, three cases: (1) no property -> headline is financial, no second stat at
+  // all; (2) property cap is the smaller/binding number -> headline is the cap, second stat shows
+  // financial; (3) financial is itself the smaller number (property cap doesn't bind) -> headline
+  // IS financial already, so the second stat would just repeat the same number and is hidden).
   const headlineLakh = result.propertyCappedEligibilityLakh ?? best?.amountLakh;
-  const showFinancialStat = result.propertyCappedEligibilityLakh !== undefined && result.financialEligibilityLakh !== undefined;
+  const showFinancialStat =
+    result.propertyCappedEligibilityLakh !== undefined &&
+    result.financialEligibilityLakh !== undefined &&
+    result.propertyCappedEligibilityLakh !== result.financialEligibilityLakh;
 
   // CIS's exact "la-results"/"la-lender" markup (captured verbatim from personal-suite-updated.html's
   // live results screen, 2026-10-28 "ship it 1:1" pass) — same classes, same structure, same
@@ -519,11 +524,10 @@ export function renderResultCard(result: EligibilityResultPayload, apiBase: stri
             // "if property not selected then show normal financial eli only").
             const propertySelected = result.propertyCappedEligibilityLakh !== undefined;
             const headlineAmountLakh = propertySelected && o.propertyCappedAmountLakh !== undefined ? Math.min(o.amountLakh, o.propertyCappedAmountLakh) : o.amountLakh;
-            // Always shown once a property is known, same as the top card's own showFinancialStat
-            // (no inequality check there either) — even when it happens to equal the headline, per
-            // direct instruction to match the top card's convention exactly (2026-11-26, confirmed
-            // live: real Bitsflow responses often cap every lender to the identical figure).
-            const showLenderFinancialStat = propertySelected && o.propertyCappedAmountLakh !== undefined;
+            // Corrected 2026-11-26 — same three-case rule as the top card's own showFinancialStat:
+            // hidden when this lender's own cap isn't actually the binding number (headline already
+            // equals the plain financial amount, so a second identical line would be pointless).
+            const showLenderFinancialStat = propertySelected && o.propertyCappedAmountLakh !== undefined && headlineAmountLakh !== o.amountLakh;
             const totalPayable = o.emi * o.tenureYears * 12;
             const totalInterest = Math.max(0, totalPayable - headlineAmountLakh * 100000);
             return `
