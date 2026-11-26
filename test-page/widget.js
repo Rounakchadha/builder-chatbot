@@ -219,7 +219,7 @@
 
       <p class="la-small" id="lc-eligibility-by-lender-label">Eligibility by lender</p>
       <div id="lc-lender-list">
-        ${t.map(s=>{const l=a.propertyCappedEligibilityLakh!==void 0,d=l&&s.propertyCappedAmountLakh!==void 0?Math.min(s.amountLakh,s.propertyCappedAmountLakh):s.amountLakh,p=l&&s.propertyCappedAmountLakh!==void 0&&V(d)!==V(s.amountLakh),m=s.emi*s.tenureYears*12,g=Math.max(0,m-d*1e5);return`
+        ${t.map(s=>{const l=a.propertyCappedEligibilityLakh!==void 0,d=l&&s.propertyCappedAmountLakh!==void 0?Math.min(s.amountLakh,s.propertyCappedAmountLakh):s.amountLakh,p=l&&a.financialEligibilityLakh!==void 0&&V(d)!==V(a.financialEligibilityLakh),m=s.emi*s.tenureYears*12,g=Math.max(0,m-d*1e5);return`
           <details class="la-lender">
             <summary>
               <span class="la-bank-icon" aria-hidden="true">${ue(s.name,e)}</span>
@@ -235,7 +235,7 @@
                 <div><small>Tenure</small><strong>${s.tenureYears} years</strong></div>
                 <div><small>Total payable</small><strong>₹${Math.round(m).toLocaleString("en-IN")}</strong></div>
                 <div><small>Total interest</small><strong>₹${Math.round(g).toLocaleString("en-IN")}</strong></div>
-                ${p?`<div><small>Financial eligibility</small><strong>${V(s.amountLakh)}</strong></div>`:""}
+                ${p?`<div><small>Financial eligibility</small><strong>${V(a.financialEligibilityLakh)}</strong></div>`:""}
               </div>
               ${dt(s)}
             </div>

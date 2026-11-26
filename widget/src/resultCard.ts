@@ -529,14 +529,17 @@ export function renderResultCard(result: EligibilityResultPayload, apiBase: stri
             // "if property not selected then show normal financial eli only").
             const propertySelected = result.propertyCappedEligibilityLakh !== undefined;
             const headlineAmountLakh = propertySelected && o.propertyCappedAmountLakh !== undefined ? Math.min(o.amountLakh, o.propertyCappedAmountLakh) : o.amountLakh;
-            // Corrected 2026-11-26 — same three-case rule as the top card's own showFinancialStat:
-            // hidden when this lender's own cap isn't actually the binding number (headline already
-            // equals the plain financial amount, so a second identical line would be pointless).
-            // Same formatted-string comparison as the top card's showFinancialStat (2026-11-26) —
-            // keeps both consistent and avoids a near-identical-but-not-bit-equal pair (e.g. a
-            // headline that rounds to the same displayed figure as the raw amount) showing as if
-            // they were two different numbers.
-            const showLenderFinancialStat = propertySelected && o.propertyCappedAmountLakh !== undefined && formatAmount(headlineAmountLakh) !== formatAmount(o.amountLakh);
+            // Corrected 2026-11-26 — this used to compare against o.amountLakh (this lender's own
+            // "amount"), but confirmed live that o.amountLakh is ALREADY property-capped by Bitsflow
+            // itself (every lender in a real response shows the identical capped figure, matching
+            // final_elig_prop_based) — same root cause as the top card's own financialEligibilityLakh
+            // bug fixed the same day (see eligibility.service.ts's incomeBasedEligibilityLakh). There
+            // is no genuine PER-LENDER uncapped figure anywhere in Bitsflow's response, only the one
+            // applicant-level true financial number (result.financialEligibilityLakh) — so every
+            // lender's second line now compares/shows against that same global figure, exactly like
+            // the top card does.
+            const showLenderFinancialStat =
+              propertySelected && result.financialEligibilityLakh !== undefined && formatAmount(headlineAmountLakh) !== formatAmount(result.financialEligibilityLakh);
             const totalPayable = o.emi * o.tenureYears * 12;
             const totalInterest = Math.max(0, totalPayable - headlineAmountLakh * 100000);
             return `
@@ -555,7 +558,7 @@ export function renderResultCard(result: EligibilityResultPayload, apiBase: stri
                 <div><small>Tenure</small><strong>${o.tenureYears} years</strong></div>
                 <div><small>Total payable</small><strong>₹${Math.round(totalPayable).toLocaleString('en-IN')}</strong></div>
                 <div><small>Total interest</small><strong>₹${Math.round(totalInterest).toLocaleString('en-IN')}</strong></div>
-                ${showLenderFinancialStat ? `<div><small>Financial eligibility</small><strong>${formatAmount(o.amountLakh)}</strong></div>` : ''}
+                ${showLenderFinancialStat ? `<div><small>Financial eligibility</small><strong>${formatAmount(result.financialEligibilityLakh!)}</strong></div>` : ''}
               </div>
               ${selectOfferSlotHtml(o)}
             </div>
