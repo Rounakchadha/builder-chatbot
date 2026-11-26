@@ -133,11 +133,15 @@ async function requestOnce<T>(method: 'GET' | 'POST', path: string, body: unknow
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (opts?.token) headers.Authorization = `Bearer ${opts.token}`;
 
-  // Logged for every call so a real outage/slowdown is diagnosable from logs alone — deliberately
-  // never includes the request body (or the token itself), which is exactly where a
-  // PAN/mobile/OTP/DOB/access-token would be.
+  // Logged for every call so a real outage/slowdown is diagnosable from logs alone.
+  // TEMPORARY, direct instruction 2026-11-26 ("write it in logs always... we'll remove it later"):
+  // now also logs the full request body, to actually see what we're sending Bitsflow while chasing
+  // their real errors. Deliberately never includes the bearer token itself (headers aren't logged
+  // at all) — but body DOES now include PAN/mobile/DOB/income/etc. REMOVE requestBody once this
+  // debugging push is done; this is a real step back from the 2026-10-23 security-review finding
+  // that body logging is exactly where that PII lives.
   const startedAt = Date.now();
-  logger.info({ event: 'finfinity_api_request', method, path, attempt }, 'calling Finfinity API');
+  logger.info({ event: 'finfinity_api_request', method, path, attempt, requestBody: body }, 'calling Finfinity API');
 
   let res: Response;
   try {
@@ -191,7 +195,9 @@ async function requestOnce<T>(method: 'GET' | 'POST', path: string, body: unknow
     return throwTracked(path, envelope.error_msg || 'Finfinity API error', envelope.error_code, redactDetail(envelope.error_dtl));
   }
 
-  logger.info({ event: 'finfinity_api_success', path, attempt, durationMs: Date.now() - startedAt }, 'Finfinity API call succeeded');
+  // TEMPORARY, same 2026-11-26 instruction as requestBody above — full response data now logged on
+  // success too, not just the fact that it succeeded. REMOVE responseData once done debugging.
+  logger.info({ event: 'finfinity_api_success', path, attempt, durationMs: Date.now() - startedAt, responseData: envelope.data }, 'Finfinity API call succeeded');
   return envelope.data;
 }
 
