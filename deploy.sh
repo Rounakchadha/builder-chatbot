@@ -3,7 +3,7 @@
 # database changes, and restarts it. Run this from your Mac any time you want to push updates.
 set -e
 
-SERVER_USER="rounak_uat"
+SERVER_USER="rounak"
 SERVER_HOST="200.97.170.143"
 SERVER_PATH="/home/worklog/chatbot"
 # The live containers were created back when this directory was named "builder-chatbot" (since
@@ -47,6 +47,7 @@ rsync -rlvz --delete \
   --exclude 'dump.rdb' \
   --exclude '.claude' \
   --exclude 'server/.env.prod' \
+  --exclude 'server/.env' \
   -e "ssh -i $SSH_KEY" \
   "$LOCAL_PATH" "$SERVER_USER@$SERVER_HOST:$SERVER_PATH/"
 
