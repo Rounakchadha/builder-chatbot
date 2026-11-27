@@ -1693,6 +1693,40 @@ export const homeLoanFlow: FlowDefinition = {
       botMessage: (ctx) => renderFoundProfileSummary(ctx),
       input: () => ({ type: 'none' }),
     },
+    // ---------- Sync pan/email/pincode/segment onto Bitsflow's customer record BEFORE the bureau
+    // check runs, not after. Reproducibly crashes Bitsflow's own backend for a brand-new customer
+    // (`get() returned more than one ApplicantModel -- it returned 2!`, a duplicate-row race in
+    // THEIR db) — reverted twice after reproducing it live (customer_id 51983, 51988, then again on
+    // customer_id 52001). Re-applied here a final time, 2026-11-27, per direct explicit instruction:
+    // Bitsflow has confirmed this call order (customer sync before bureau) is the correct/intended
+    // one on their end, and they are the ones fixing the duplicate-row bug — this is NOT to be
+    // reverted again on our own judgment just because the crash reproduces; that crash is expected
+    // until Bitsflow ships their own fix, not a reason to walk back the correct order. See
+    // project_prebureau_customersync_bitsflow_bug memory for the full history before touching this
+    // again. ----------
+    {
+      id: 'preBureauCustomerSync',
+      type: 'apiFetch',
+      progressLabel: 'About you',
+      isApplicable: (ctx) => isEligibilityIntent(ctx.answers) && Boolean(ctx.answers.pan) && !ctx.answers.preBureauCustomerSynced,
+      botMessage: () => null,
+      input: () => ({ type: 'none' }),
+      onAnswer: async (_parsed, ctx) => {
+        void dedupeService
+          .updateCustomer(
+            ctx.answers.remoteCustomerId as number | undefined,
+            {
+              pan: ctx.answers.pan as string,
+              email: ctx.answers.email as string | undefined,
+              pincode: ctx.answers.pincode as string | undefined,
+              segment: ctx.answers.segment as string | undefined,
+            },
+            ctx.answers.finfinityAccessToken as string | undefined,
+          )
+          .catch((err) => logger.error({ err, conversationId: ctx.conversationId }, 'preBureauCustomerSync: updateCustomer failed — continuing without it'));
+        return { preBureauCustomerSynced: true };
+      },
+    },
     // ---------- OTP #2: bureau/PAN consent OTP — a second, separate verification specifically
     // for the credit-bureau pull, right before it happens. (In the real system this second
     // check isn't a plain OTP box for every customer: the primary bureau asks a knowledge-based
