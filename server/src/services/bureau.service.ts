@@ -61,6 +61,11 @@ export interface GenerateBureauInput {
   /** The access token from the OTP #1 (dedupe) verify — every authenticated call needs one, and
    * this is the most recent one available at this point in the conversation. */
   token: string;
+  /** Set by generateBureauWithExperianFallback (homeLoan.ts) on its deliberate, one-shot retry
+   * after a CIBIL fallback code — bypasses finfinityClient's bureau cooldown guard, which would
+   * otherwise block this intentional immediate retry as if it were a runaway loop. See that
+   * guard's own comment in finfinityClient.ts for the real incident this fixed. */
+  skipCooldown?: boolean;
 }
 
 /** validatebureau's own success response returns a FRESH access/refresh token pair — the same
@@ -151,7 +156,7 @@ export const realBureauApi: RealBureauApi = {
             campaign_code: env.FINFINITY_CAMPAIGN_CODE,
             applicant_type_key: input.applicantTypeKey,
           },
-          { token: input.token, retryOnTransient: false },
+          { token: input.token, retryOnTransient: false, skipBureauCooldown: input.skipCooldown },
         )
         .then((results) => {
           const result = results[0];

@@ -219,6 +219,13 @@ const BUREAU_COST_SENSITIVE_PATHS = new Set(['/leadflow/generatebureau', '/leadf
 const BUREAU_CALL_COOLDOWN_MS = 5_000;
 const lastBureauCallAt = new Map<string, number>();
 
+// Bug found 2026-11-27 (real prod case, Tara Gupta): the cooldown above set its own timestamp on
+// the FIRST call, then blocked the deliberate, code-controlled second call that
+// generateBureauWithExperianFallback (homeLoan.ts) makes a split-second later to retry CIBIL as
+// Experian — so the cooldown meant for blocking a genuine external retry storm was blocking our
+// own one-shot internal fallback instead, and the customer never got the Experian retry they were
+// supposed to. `skipBureauCooldown` lets that one specific, already-bounded-to-exactly-one-retry
+// call bypass the check; every other caller still goes through the cooldown as before.
 function bureauCooldownKey(path: string, body: unknown): string | undefined {
   if (!body || typeof body !== 'object') return undefined;
   const b = body as Record<string, unknown>;
@@ -227,8 +234,8 @@ function bureauCooldownKey(path: string, body: unknown): string | undefined {
   return `${path}:${String(identifier)}`;
 }
 
-function checkBureauCooldown(path: string, body: unknown): void {
-  if (!BUREAU_COST_SENSITIVE_PATHS.has(path)) return;
+function checkBureauCooldown(path: string, body: unknown, skip?: boolean): void {
+  if (skip || !BUREAU_COST_SENSITIVE_PATHS.has(path)) return;
   const key = bureauCooldownKey(path, body);
   if (!key) return;
   const last = lastBureauCallAt.get(key);
@@ -269,9 +276,9 @@ async function request<T>(
   method: 'GET' | 'POST',
   path: string,
   body?: unknown,
-  opts?: { token?: string; retryOnTransient?: boolean },
+  opts?: { token?: string; retryOnTransient?: boolean; skipBureauCooldown?: boolean },
 ): Promise<T> {
-  checkBureauCooldown(path, body);
+  checkBureauCooldown(path, body, opts?.skipBureauCooldown);
   await acquireSlot();
   try {
     try {
@@ -294,6 +301,7 @@ export const finfinityClient = {
   // repeat blind (they create/consume something real: generateotpv2/validateotpv2's SMS send and
   // attempt count, create_anacity_lead's new lead row, generatebureau/validatebureau's OTP
   // session) explicitly pass `retryOnTransient: false` at their call sites.
-  post: <T>(path: string, body: unknown, opts?: { token?: string; retryOnTransient?: boolean }) => request<T>('POST', path, body, opts),
+  post: <T>(path: string, body: unknown, opts?: { token?: string; retryOnTransient?: boolean; skipBureauCooldown?: boolean }) =>
+    request<T>('POST', path, body, opts),
   get: <T>(path: string, opts?: { token?: string; retryOnTransient?: boolean }) => request<T>('GET', path, undefined, opts),
 };

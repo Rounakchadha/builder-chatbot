@@ -138,7 +138,10 @@ async function generateBureauWithExperianFallback(input: Parameters<typeof realB
   } catch (err) {
     if (err instanceof FinfinityApiError && (CIBIL_FALLBACK_CODES.has(err.code) || isCibilNotFoundByMessage(err.message))) {
       logger.info({ event: 'bureau_cibil_fallback_to_experian', code: err.code }, 'CIBIL unavailable for this PAN — retrying for Experian');
-      return await realBureauApi.generateBureau(input);
+      // skipCooldown: this is the one deliberate, code-controlled retry this function ever makes —
+      // without it, finfinityClient's bureau cooldown guard blocks this call as if it were a runaway
+      // retry loop, since the first attempt above just set the same cooldown key moments earlier.
+      return await realBureauApi.generateBureau({ ...input, skipCooldown: true });
     }
     throw err;
   }
