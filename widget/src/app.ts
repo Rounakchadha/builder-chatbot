@@ -1826,6 +1826,14 @@ export class ChatWidget {
     const boxes = document.createElement('div');
     boxes.className = 'la-otp';
     const inputs: HTMLInputElement[] = [];
+    // Bug fixed 2026-11-27 (reported: OTP verified twice, real validateotpv2/dedupe calls fired
+    // twice a few seconds apart for the same code, chat state ending up broken after) — autofill
+    // (SMS auto-read on mobile) can set multiple boxes' values in quick succession, and EACH box's
+    // own 'input' event independently re-checks "are all boxes filled now", so two different boxes'
+    // events could both see all-filled and both call submitUserValue for the same code. Guarding on
+    // a single flag set the instant the first one fires (before clearComposer/sendAndRender even
+    // run) closes that window regardless of event ordering.
+    let autoSubmitted = false;
     for (let i = 0; i < length; i++) {
       const inp = document.createElement('input');
       inp.maxLength = 1;
@@ -1841,7 +1849,8 @@ export class ChatWidget {
         // 2026-10-30 fix: "it doesn't even have the verify button otp automatically verifies on
         // mob"). Scoped to the mobile breakpoint only — desktop keeps the explicit Verify button,
         // which isn't what was reported broken.
-        if (window.matchMedia('(max-width:768px)').matches && inputs.every((f) => f.value.length === 1)) {
+        if (!autoSubmitted && window.matchMedia('(max-width:768px)').matches && inputs.every((f) => f.value.length === 1)) {
+          autoSubmitted = true;
           const code = inputs.map((f) => f.value).join('');
           this.submitUserValue(stepId, code, '••••••', true);
         }
