@@ -100,7 +100,19 @@ function bureauLabel(source: unknown): string {
 // 'NOT_FOUND' added 2026-11-25 (real prod case, Sparsh's test — Tara Gupta's profile): same "no
 // CIBIL record for this PAN" intent as CIBIL_NOT_FOUND, just a different code string Bitsflow sent
 // this time — without it, this case threw immediately instead of trying Experian next.
-const CIBIL_FALLBACK_CODES = new Set(['CIBIL_NOT_FOUND', 'NO_HISTORY', 'OTP_ALTERNATE_MOBILE', 'NOT_FOUND']);
+// 'OTP_AlternateEmail_Entry_Queue' added 2026-11-27 (real prod case, Tara Gupta's profile again,
+// customer_id 52017): "Please select the alternative mobile number" — same duplicate-customer-record
+// root cause as the others, just a new code string. We have no documented way to actually submit a
+// chosen mobile number (no field/endpoint for it anywhere in our Bitsflow API docs), so this is the
+// same blind-retry-and-hope treatment as OTP_ALTERNATE_MOBILE, not a real fix — flag to Bitsflow if
+// it keeps failing even after retry.
+const CIBIL_FALLBACK_CODES = new Set([
+  'CIBIL_NOT_FOUND',
+  'NO_HISTORY',
+  'OTP_ALTERNATE_MOBILE',
+  'NOT_FOUND',
+  'OTP_AlternateEmail_Entry_Queue',
+]);
 
 // Real prod case, 2026-11-26 (Tanvi's test): Bitsflow sent the SAME "no CIBIL record" intent under
 // error_code 'INVALID_404' this time, with the actual message literally telling the customer to
