@@ -1824,8 +1824,19 @@ export const homeLoanFlow: FlowDefinition = {
         // whole OTP/consent dance when a real score is actually found; returns null (not an error)
         // for a known customer with nothing on file yet, same as before, just without wastefully
         // starting a new pull first.
+        // Bug fixed 2026-11-27 (real prod case, Makarand's HL test — existing customer, real score
+        // on file, but got sent through a brand-new real bureau pull anyway, whose OTP then never
+        // arrived): this step runs BEFORE the 'product' step (see flows/index.ts's splice comment —
+        // identity/bureau runs for every product before 'product' is ever asked), so
+        // ctx.answers.product is undefined here for every customer EXCEPT one whose launch token
+        // happened to prefill it. The productCode lookup below silently returned undefined for
+        // everyone else, skipping fetchBureauData's "do they already have a score on file" check
+        // entirely and forcing a wasteful (and here, broken) fresh pull every single time. Defaults
+        // to 'HL' when product isn't known yet — same convention isHomeLoanOrLap-style checks
+        // elsewhere in this file already use for a not-yet-chosen product — since this is just a
+        // read-only existing-score lookup, not a product-specific action.
         const remoteCustomerId = ctx.answers.remoteCustomerId as number | undefined;
-        const productCode = PRODUCT_CODE[ctx.answers.product as string];
+        const productCode = PRODUCT_CODE[(ctx.answers.product as string | undefined) ?? 'Home loan'];
         if (remoteCustomerId && productCode) {
           // Bug fixed 2026-11-26 (real prod case, Tanvi's LAP test): confirmed live that
           // fetchbureaudata can come back as a genuine thrown error (error_code
