@@ -1664,40 +1664,6 @@ export const homeLoanFlow: FlowDefinition = {
       botMessage: (ctx) => renderFoundProfileSummary(ctx),
       input: () => ({ type: 'none' }),
     },
-    // ---------- Sync pan/email/pincode/segment onto Bitsflow's customer record BEFORE the bureau
-    // check runs, not after (2026-11-27 real case: a brand-new customer's Experian validate crashed
-    // server-side on Bitsflow's end with a raw Python error — 'NoneType' object has no attribute
-    // 'strip' — plausibly because their customer record had none of this on file yet; the only place
-    // that ever pushed it was syncLeadFinancials, which only runs AFTER lead creation, well past the
-    // bureau step). profileFoundIdentityBackfill's own push only fires when name/dob were missing —
-    // a found customer whose profile was already complete (the common case) got no push at all
-    // either. By here (after pan/email/pincode/segment's own steps above, whether just-collected or
-    // already known from dedupeCheck/searchcustomer) all four are reliably available for both the
-    // found and not-found branches alike, so this runs once, unconditionally, right before either
-    // bureau trigger below. ----------
-    {
-      id: 'preBureauCustomerSync',
-      type: 'apiFetch',
-      progressLabel: 'About you',
-      isApplicable: (ctx) => isEligibilityIntent(ctx.answers) && Boolean(ctx.answers.pan) && !ctx.answers.preBureauCustomerSynced,
-      botMessage: () => null,
-      input: () => ({ type: 'none' }),
-      onAnswer: async (_parsed, ctx) => {
-        void dedupeService
-          .updateCustomer(
-            ctx.answers.remoteCustomerId as number | undefined,
-            {
-              pan: ctx.answers.pan as string,
-              email: ctx.answers.email as string | undefined,
-              pincode: ctx.answers.pincode as string | undefined,
-              segment: ctx.answers.segment as string | undefined,
-            },
-            ctx.answers.finfinityAccessToken as string | undefined,
-          )
-          .catch((err) => logger.error({ err, conversationId: ctx.conversationId }, 'preBureauCustomerSync: updateCustomer failed — continuing without it'));
-        return { preBureauCustomerSynced: true };
-      },
-    },
     // ---------- OTP #2: bureau/PAN consent OTP — a second, separate verification specifically
     // for the credit-bureau pull, right before it happens. (In the real system this second
     // check isn't a plain OTP box for every customer: the primary bureau asks a knowledge-based
