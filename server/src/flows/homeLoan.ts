@@ -1432,6 +1432,23 @@ export const homeLoanFlow: FlowDefinition = {
       },
       onAnswer: async (parsed, ctx) => {
         if (ctx.answers.customerId) await customerService.updateMissingField(ctx.answers.customerId as string, 'email', parsed as string);
+        // Bug fixed 2026-11-27 (real report: a dedupe-found customer missing email/pincode on
+        // Bitsflow's record got asked for it, eligibility ran fine, but the NEXT session asked
+        // again) — updateMissingField above only ever writes to OUR OWN local mock-Customer row,
+        // which a real customer never has (see dedupeCheck's own comment: only the mock produces a
+        // local customerId). A real customer's email/pincode/segment was only ever held in
+        // ctx.answers for this one conversation, never pushed back to Bitsflow's own record, so
+        // their next searchcustomer still came back with it missing. Push it onto the real record
+        // when one exists, same call preBureauCustomerSync already uses — but ONLY for the
+        // dedupeFound branch. The not-found (brand-new customer) branch deliberately does NOT get
+        // this: calling updatecustomerv3 before the bureau check for a brand-new customer is
+        // exactly what crashes Bitsflow's backend (see preBureauCustomerSync, currently reverted) —
+        // that branch's own sync stays deferred to syncLeadFinancials, after lead creation, as before.
+        if (ctx.answers.dedupeFound === true && ctx.answers.remoteCustomerId) {
+          void dedupeService
+            .updateCustomer(ctx.answers.remoteCustomerId as number, { email: parsed as string }, ctx.answers.finfinityAccessToken as string | undefined)
+            .catch((err) => logger.error({ err, conversationId: ctx.conversationId }, 'email: updateCustomer failed — continuing without it'));
+        }
       },
     },
     // ---------- email-collision guard (not-found branch only) — same idea as the PAN one above ----------
@@ -1565,6 +1582,12 @@ export const homeLoanFlow: FlowDefinition = {
       },
       onAnswer: async (parsed, ctx) => {
         if (ctx.answers.customerId) await customerService.updateMissingField(ctx.answers.customerId as string, 'pincode', parsed as string);
+        // See the matching comment on the `email` step above — same gap, same fix.
+        if (ctx.answers.dedupeFound === true && ctx.answers.remoteCustomerId) {
+          void dedupeService
+            .updateCustomer(ctx.answers.remoteCustomerId as number, { pincode: parsed as string }, ctx.answers.finfinityAccessToken as string | undefined)
+            .catch((err) => logger.error({ err, conversationId: ctx.conversationId }, 'pincode: updateCustomer failed — continuing without it'));
+        }
         const area = await pincodeService.lookupArea(parsed as string);
         void rememberProfile(ctx.answers.mobile as string, { pincode: parsed as string });
         return area ? { pincodeArea: area } : undefined;
@@ -1593,6 +1616,12 @@ export const homeLoanFlow: FlowDefinition = {
         validateChoice(ctx, 'segment', [...SEGMENTS], value, 'Are you salaried, a business owner, or a self-employed professional?', SEGMENT_HINTS),
       onAnswer: async (parsed, ctx) => {
         if (ctx.answers.customerId) await customerService.updateMissingField(ctx.answers.customerId as string, 'segment', parsed as string);
+        // See the matching comment on the `email` step above — same gap, same fix.
+        if (ctx.answers.dedupeFound === true && ctx.answers.remoteCustomerId) {
+          void dedupeService
+            .updateCustomer(ctx.answers.remoteCustomerId as number, { segment: parsed as string }, ctx.answers.finfinityAccessToken as string | undefined)
+            .catch((err) => logger.error({ err, conversationId: ctx.conversationId }, 'segment: updateCustomer failed — continuing without it'));
+        }
       },
     },
     // ---------- Direct ask-if-still-missing fallbacks for name/dob (2026-11-17 instruction:
