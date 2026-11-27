@@ -203,6 +203,43 @@ async function requestOnce<T>(method: 'GET' | 'POST', path: string, body: unknow
   return envelope.data;
 }
 
+// Guardrail added 2026-11-27: a step being resent (a flaky client retrying, a test script looping,
+// or any future bug like it) re-runs that step's onAnswer from scratch, which fires a brand-new
+// REAL call here every time — the retry logic above only covers ONE internal retry per top-level
+// call, it does nothing to stop the outside world from calling `request()` again and again. Found
+// live the hard way: a bad test script fired /leadflow/updatebureau ~60+ times in under a minute
+// for one customer, every one a real bureau-pull attempt, before our own circuit breaker kicked in.
+// Real bureau pulls cost real money per attempt (see feedback_bureau_api_costs_money) — this is the
+// one class of endpoint where "just let it retry, Bitsflow is the one being rate-limited" isn't
+// good enough. Scoped ONLY to the bureau-pull endpoints, not every Finfinity call, since those are
+// the ones that cost money per attempt; a short in-memory cooldown keyed by whatever customer
+// identifier is in the request body is enough to stop a storm without affecting a normal flow
+// (which only ever calls one of these once per bureau attempt anyway).
+const BUREAU_COST_SENSITIVE_PATHS = new Set(['/leadflow/generatebureau', '/leadflow/updatebureau', '/leadflow/validatebureau', '/leadflow/fetchbureaudata']);
+const BUREAU_CALL_COOLDOWN_MS = 5_000;
+const lastBureauCallAt = new Map<string, number>();
+
+function bureauCooldownKey(path: string, body: unknown): string | undefined {
+  if (!body || typeof body !== 'object') return undefined;
+  const b = body as Record<string, unknown>;
+  const identifier = b.customer_id ?? b.phone_number ?? b.pan;
+  if (identifier === undefined) return undefined;
+  return `${path}:${String(identifier)}`;
+}
+
+function checkBureauCooldown(path: string, body: unknown): void {
+  if (!BUREAU_COST_SENSITIVE_PATHS.has(path)) return;
+  const key = bureauCooldownKey(path, body);
+  if (!key) return;
+  const last = lastBureauCallAt.get(key);
+  const now = Date.now();
+  if (last !== undefined && now - last < BUREAU_CALL_COOLDOWN_MS) {
+    logger.warn({ event: 'finfinity_bureau_cooldown_blocked', path, key }, 'Blocked a bureau-pull call — same customer retried within the local cooldown window, real call skipped to avoid a paid-API retry storm');
+    throw new FinfinityApiError('A credit bureau check was just requested for this customer — please wait a few seconds before trying again.', 'LOCAL_COOLDOWN', { path });
+  }
+  lastBureauCallAt.set(key, now);
+}
+
 // Security-review finding, 2026-10-23: nothing capped how many calls to Finfinity could be in
 // flight at once — if their backend ever slowed down, every simultaneous customer conversation
 // could pile up waiting on it at the same time, with nothing to throttle or fail fast, tying up
@@ -234,6 +271,7 @@ async function request<T>(
   body?: unknown,
   opts?: { token?: string; retryOnTransient?: boolean },
 ): Promise<T> {
+  checkBureauCooldown(path, body);
   await acquireSlot();
   try {
     try {
