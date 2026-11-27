@@ -193,7 +193,15 @@ async function requestOnce<T>(method: 'GET' | 'POST', path: string, body: unknow
   }
 
   if (envelope.error_code && !SUCCESS_FLAVORED_ERROR_CODES.has(envelope.error_code)) {
-    logger.warn({ event: 'finfinity_api_error', path, attempt, code: envelope.error_code, msg: envelope.error_msg, durationMs: Date.now() - startedAt }, 'Finfinity API returned an error envelope');
+    // TEMPORARY, 2026-11-27 — checking whether OTP_AlternateEmail_Entry_Queue (and any other error
+    // code like it) actually carries candidate data (e.g. a list of alternate mobile numbers)
+    // alongside the error_code, which this log line never surfaced before — only error_msg/code/dtl
+    // were ever logged on this branch, so envelope.data/error_dtl's full shape was silently dropped
+    // every time. REMOVE once we know either way for OTP_AlternateEmail_Entry_Queue.
+    logger.warn(
+      { event: 'finfinity_api_error', path, attempt, code: envelope.error_code, msg: envelope.error_msg, rawEnvelope: envelope, durationMs: Date.now() - startedAt },
+      'Finfinity API returned an error envelope',
+    );
     return throwTracked(path, envelope.error_msg || 'Finfinity API error', envelope.error_code, redactDetail(envelope.error_dtl));
   }
 
