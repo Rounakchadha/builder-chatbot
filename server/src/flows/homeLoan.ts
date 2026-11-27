@@ -2093,6 +2093,31 @@ export const homeLoanFlow: FlowDefinition = {
               })
             : undefined;
         if (pull) void rememberProfile(ctx.answers.mobile as string, { creditScore: pull.creditScore, bureauSource: pull.source });
+        // Added 2026-11-27 (direct instruction: keep collecting locally as before, but push
+        // everything together in one go at a point guaranteed to run even if the customer later
+        // abandons before a lead ever gets created) — pan/email/pincode/segment otherwise only ever
+        // reach Bitsflow via syncLeadFinancials, which runs at lead creation, near the very end of
+        // the flow. A customer who answers everything up through the bureau step but drops off
+        // before finishing the remaining loan questions never gets this saved, so their NEXT
+        // session still finds a blank record and asks again. This step runs for every not-found
+        // customer unconditionally (see isApplicable above) right after the bureau step resolves —
+        // deliberately AFTER, never before, since calling updatecustomerv3 BEFORE updatebureau for a
+        // brand-new customer is what crashes Bitsflow's backend (see
+        // project_prebureau_customersync_bitsflow_bug memory / preBureauCustomerSync, reverted).
+        if (ctx.answers.remoteCustomerId) {
+          void dedupeService
+            .updateCustomer(
+              ctx.answers.remoteCustomerId as number,
+              {
+                pan: ctx.answers.pan as string | undefined,
+                email: ctx.answers.email as string | undefined,
+                pincode: ctx.answers.pincode as string | undefined,
+                segment: ctx.answers.segment as string | undefined,
+              },
+              ctx.answers.finfinityAccessToken as string | undefined,
+            )
+            .catch((err) => logger.error({ err, conversationId: ctx.conversationId }, 'bureauFetchNotFound: post-bureau updateCustomer failed — continuing without it'));
+        }
         // Replaces the masked name panFetch showed with the real one, now that both OTPs
         // (identity, then bureau consent) are cleared — same bar the dedupe-found branch clears
         // with just its one OTP before ever storing the real name. Updating the actual answers.name
