@@ -1888,76 +1888,6 @@ export const homeLoanFlow: FlowDefinition = {
         });
       },
     },
-    // Confirmed with Bitsflow (2026-11-25): Experian's own 404 ("Kindly use this mobile number for
-    // login: XXXXXXX123") means the number we have doesn't match what the bureau has on file for
-    // this PAN. Direct instruction: let the customer re-enter the number, don't re-ask PAN/name
-    // (already confirmed earlier in this same conversation) — just get the right number and
-    // continue straight into the normal OTP step below. Shared by both the found and not-found
-    // branches (isApplicable doesn't split on dedupeFound — runGenerateBureau's own fallback logic
-    // and the wrong-number check are identical either way; only which OTP step comes after differs,
-    // and that's still correctly gated by each one's own dedupeFound check).
-    {
-      id: 'bureauMobileCorrection',
-      type: 'mobile',
-      progressLabel: 'Verifying identity',
-      isApplicable: (ctx) => realBureauFlowEnabled && !ctx.answers.creditScore && !!ctx.answers.bureauWrongNumberHint && !ctx.answers.bureauAlternateNumberNeeded && isIndividualPan(ctx.answers.pan as string | undefined),
-      botMessage: (ctx) => `The mobile number on file with the credit bureau looks different from what you gave us (it ends in ${ctx.answers.bureauWrongNumberHint}) — what's the correct number?`,
-      input: () => ({ type: 'mobile' }),
-      validate: (value) => {
-        const v = (value || '').trim();
-        if (!/^[6-9]\d{9}$/.test(v)) return { ok: false, error: 'Enter a valid 10-digit mobile number.' };
-        return { ok: true, parsed: v };
-      },
-      onAnswer: async (parsed, ctx) => {
-        const a = ctx.answers;
-        const result = await runGenerateBureau({
-          pan: a.pan as string,
-          phoneNumber: parsed as string,
-          officialEmail: a.email as string,
-          pincode: a.pincode as string,
-          applicantTypeKey: mapSegmentToHlEmploymentType(a.segment as string | undefined),
-          token: a.finfinityAccessToken as string,
-        });
-        if (isBureauWrongNumberResult(result)) {
-          // Second wrong-number signal in a row for a number the customer just typed themselves —
-          // not worth looping indefinitely on a guess; a real mismatch this persistent needs a
-          // human, not another retry.
-          throw new Error("We're still unable to verify this number with the credit bureau. Please contact support to continue.");
-        }
-        return { mobile: parsed, bureauWrongNumberHint: undefined, ...result };
-      },
-    },
-    {
-      id: 'bureauAlternateNumberCorrection',
-      type: 'mobile',
-      progressLabel: 'Verifying identity',
-      isApplicable: (ctx) => realBureauFlowEnabled && !ctx.answers.creditScore && !!ctx.answers.bureauAlternateNumberNeeded && isIndividualPan(ctx.answers.pan as string | undefined),
-      botMessage: () => "Another mobile number is linked to your PAN with the credit bureau — please enter that number instead.",
-      input: () => ({ type: 'mobile' }),
-      validate: (value) => {
-        const v = (value || '').trim();
-        if (!/^[6-9]\d{9}$/.test(v)) return { ok: false, error: 'Enter a valid 10-digit mobile number.' };
-        return { ok: true, parsed: v };
-      },
-      onAnswer: async (parsed, ctx) => {
-        const a = ctx.answers;
-        const result = await runGenerateBureau({
-          pan: a.pan as string,
-          phoneNumber: parsed as string,
-          officialEmail: a.email as string,
-          pincode: a.pincode as string,
-          applicantTypeKey: mapSegmentToHlEmploymentType(a.segment as string | undefined),
-          token: a.finfinityAccessToken as string,
-        });
-        if (isBureauAlternateNumberResult(result)) {
-          // Same reasoning as bureauMobileCorrection's own repeat-failure case — a second
-          // alternate-number signal in a row for a number the customer just typed themselves means
-          // this needs a human, not another guess.
-          throw new Error("We're still unable to verify this number with the credit bureau. Please contact support to continue.");
-        }
-        return { mobile: parsed, bureauAlternateNumberNeeded: undefined, ...result };
-      },
-    },
     {
       id: 'otpBureauRealFound',
       type: 'otp',
@@ -2159,6 +2089,88 @@ export const homeLoanFlow: FlowDefinition = {
           ...(pull.accessToken ? { finfinityAccessToken: pull.accessToken } : {}),
           ...(pull.refreshToken ? { finfinityRefreshToken: pull.refreshToken } : {}),
         };
+      },
+    },
+    // Confirmed with Bitsflow (2026-11-25): Experian's own 404 ("Kindly use this mobile number for
+    // login: XXXXXXX123") means the number we have doesn't match what the bureau has on file for
+    // this PAN. Direct instruction: let the customer re-enter the number, don't re-ask PAN/name
+    // (already confirmed earlier in this same conversation) — just get the right number and retry.
+    // Shared by both the found and not-found branches (isApplicable doesn't split on dedupeFound —
+    // runGenerateBureau's own fallback logic and the wrong-number check are identical either way).
+    // Bug fixed 2026-11-28 — this block used to sit right after triggerBureauRealFound/
+    // otpBureauRealFound, BEFORE triggerBureauRealNotFound/otpBureauRealNotFound in the step array.
+    // The flow engine's forward-walk (nextStepId in flow-engine/engine.ts) only ever scans FORWARD
+    // from the current step's array position, never back to an earlier index — so a wrong-number
+    // (or alternate-number) result from the NOT-FOUND branch's trigger was structurally unreachable
+    // here: the walk skipped straight past this block to bureauFetchNotFound below, which assumes
+    // creditScore is already set by this point and crashed calling the old mock bureauService.pull()
+    // instead. Moving this block to AFTER both branches' OTP steps (and before bureauFetchNotFound)
+    // makes it reachable from either branch's trigger, since both now come before it in the array.
+    {
+      id: 'bureauMobileCorrection',
+      type: 'mobile',
+      progressLabel: 'Verifying identity',
+      isApplicable: (ctx) => realBureauFlowEnabled && !ctx.answers.creditScore && !!ctx.answers.bureauWrongNumberHint && !ctx.answers.bureauAlternateNumberNeeded && isIndividualPan(ctx.answers.pan as string | undefined),
+      botMessage: (ctx) => `The mobile number on file with the credit bureau looks different from what you gave us (it ends in ${ctx.answers.bureauWrongNumberHint}) — what's the correct number?`,
+      input: () => ({ type: 'mobile' }),
+      validate: (value) => {
+        const v = (value || '').trim();
+        if (!/^[6-9]\d{9}$/.test(v)) return { ok: false, error: 'Enter a valid 10-digit mobile number.' };
+        return { ok: true, parsed: v };
+      },
+      onAnswer: async (parsed, ctx) => {
+        const a = ctx.answers;
+        const result = await runGenerateBureau({
+          pan: a.pan as string,
+          phoneNumber: parsed as string,
+          officialEmail: a.email as string,
+          pincode: a.pincode as string,
+          applicantTypeKey: mapSegmentToHlEmploymentType(a.segment as string | undefined),
+          token: a.finfinityAccessToken as string,
+        });
+        if (isBureauWrongNumberResult(result)) {
+          // Second wrong-number signal in a row for a number the customer just typed themselves —
+          // not worth looping indefinitely on a guess; a real mismatch this persistent needs a
+          // human, not another retry.
+          throw new Error("We're still unable to verify this number with the credit bureau. Please contact support to continue.");
+        }
+        return { mobile: parsed, bureauWrongNumberHint: undefined, ...result };
+      },
+    },
+    // bureauAlternateNumberNeeded (2026-11-28): see SUCCESS_FLAVORED_ERROR_CODES's own comment in
+    // finfinityClient.ts — OTP_AlternateEmail_Entry_Queue turned out to usually carry a real, usable
+    // CIBIL session, same as CIBIL_QUESTION_QUEUE/OTP_IDM_Email_Queue, so this step should rarely if
+    // ever actually trigger now. Kept as a fallback for if Bitsflow ever returns this code with
+    // genuinely no usable data.
+    {
+      id: 'bureauAlternateNumberCorrection',
+      type: 'mobile',
+      progressLabel: 'Verifying identity',
+      isApplicable: (ctx) => realBureauFlowEnabled && !ctx.answers.creditScore && !!ctx.answers.bureauAlternateNumberNeeded && isIndividualPan(ctx.answers.pan as string | undefined),
+      botMessage: () => "Another mobile number is linked to your PAN with the credit bureau — please enter that number instead.",
+      input: () => ({ type: 'mobile' }),
+      validate: (value) => {
+        const v = (value || '').trim();
+        if (!/^[6-9]\d{9}$/.test(v)) return { ok: false, error: 'Enter a valid 10-digit mobile number.' };
+        return { ok: true, parsed: v };
+      },
+      onAnswer: async (parsed, ctx) => {
+        const a = ctx.answers;
+        const result = await runGenerateBureau({
+          pan: a.pan as string,
+          phoneNumber: parsed as string,
+          officialEmail: a.email as string,
+          pincode: a.pincode as string,
+          applicantTypeKey: mapSegmentToHlEmploymentType(a.segment as string | undefined),
+          token: a.finfinityAccessToken as string,
+        });
+        if (isBureauAlternateNumberResult(result)) {
+          // Same reasoning as bureauMobileCorrection's own repeat-failure case — a second
+          // alternate-number signal in a row for a number the customer just typed themselves means
+          // this needs a human, not another guess.
+          throw new Error("We're still unable to verify this number with the credit bureau. Please contact support to continue.");
+        }
+        return { mobile: parsed, bureauAlternateNumberNeeded: undefined, ...result };
       },
     },
     {

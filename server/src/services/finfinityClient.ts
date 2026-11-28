@@ -79,7 +79,17 @@ async function throwTracked(path: string, message: string, code: string, detail:
 // error-code list for validatebureau's resendOTP:true path (yesterday's resend fix) returns
 // "OTP_RESEND" on success ("OTP Resent Successfully") — the exact same success-flavored-error
 // pattern as OTP_IDM_Email_Queue, just never added here when that resend code shipped.
-const SUCCESS_FLAVORED_ERROR_CODES = new Set(['CUST_NOT_EXIST', 'CIBIL_QUESTION_QUEUE', 'OTP_IDM_Email_Queue', 'OTP_RESEND']);
+// Bug fixed 2026-11-28 (real prod case, Tara Gupta's PAN, customer_id 52063) — a FOURTH instance of
+// this exact pattern: "OTP_AlternateEmail_Entry_Queue" ("Please select the alternative mobile
+// number") was being treated as a hard failure and handled by asking the customer for an alternate
+// number (see homeLoan.ts's bureauAlternateNumberCorrection step) — but full-envelope logging
+// added the same day to investigate it showed `data` carrying a complete, valid CIBIL
+// questionKey/answerKey/ChallengeConfigGUID/otp_session_id session, identical in shape to a normal
+// CIBIL_QUESTION_QUEUE success. Every "alternate number" retry was very likely generating a fresh
+// valid session we were discarding every time, not genuinely failing — that's also why it
+// "reproduced identically" on retry. The alternate-number-correction flow is kept as a fallback for
+// if this code is ever genuinely returned with no usable data, but should rarely if ever trigger now.
+const SUCCESS_FLAVORED_ERROR_CODES = new Set(['CUST_NOT_EXIST', 'CIBIL_QUESTION_QUEUE', 'OTP_IDM_Email_Queue', 'OTP_RESEND', 'OTP_AlternateEmail_Entry_Queue']);
 
 // A hung real API call must never hang the whole conversation turn — but 10s was proving too
 // tight for real Bitsflow endpoints (confirmed live, 2026-11-26: create_anacity_lead legitimately
