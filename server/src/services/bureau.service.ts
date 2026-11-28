@@ -97,6 +97,25 @@ export interface RealBureauApi {
   // automatically from whatever generateBureau() returned, never shown to or asked of the customer.
   validateBureauCibil(input: { customerId: number; otpSessionId: string; phoneNumber: string; questionKey: string; answerKey: string; challengeConfigGuid: string; otp: string; token: string }): Promise<BureauPull>;
   validateBureauExperian(input: { customerId: number; otpSessionId: string; phoneNumber: string; otp: string; token: string }): Promise<BureauPull>;
+  /** Direct user instruction, 2026-11-28, for the OTP_AlternateEmail_Entry_Queue case ("this isn't
+   * CIBIL's number for this PAN"): submit the alternate number the customer thinks IS linked by
+   * putting it in validatebureau's own `otp` field against the SAME pending session (customer_id/
+   * otp_session_id/questionKey/answerKey/ChallengeConfigGUID already on file) — same call shape as
+   * resendBureauOtp below, just the alternate number in place of `resendOTP: true`. This is a
+   * trigger, not the final answer: it should cause CIBIL to actually send a real OTP to that
+   * alternate number, which the customer then enters separately via the normal
+   * validateBureauCibil above (same session fields, real otp this time). Unverified end-to-end
+   * yet — modeled on resendBureauOtp's confirmed-working shape, not separately confirmed itself. */
+  triggerBureauAlternateNumberOtp(input: {
+    customerId: number;
+    otpSessionId: string;
+    phoneNumber: string;
+    questionKey: string;
+    answerKey: string;
+    challengeConfigGuid: string;
+    alternateNumber: string;
+    token: string;
+  }): Promise<void>;
   /** Confirmed by Bitsflow 2026-11-23 — NOT a fresh generateBureau() call (that starts an entirely
    * new session/question). Resending reuses the EXISTING otp_session_id (and, for CIBIL, the same
    * questionKey/answerKey/ChallengeConfigGUID already on file from the original trigger) — same
@@ -236,6 +255,22 @@ export const realBureauApi: RealBureauApi = {
             phone_number: input.phoneNumber,
             resendOTP: true,
           },
+      { token: input.token, retryOnTransient: false },
+    );
+  },
+  async triggerBureauAlternateNumberOtp(input) {
+    await finfinityClient.post(
+      '/leadflow/validatebureau',
+      {
+        customer_id: input.customerId,
+        bureau: 'CIBIL',
+        otp_session_id: input.otpSessionId,
+        phone_number: input.phoneNumber,
+        questionKey: input.questionKey,
+        answerKey: input.answerKey,
+        ChallengeConfigGUID: input.challengeConfigGuid,
+        otp: input.alternateNumber,
+      },
       { token: input.token, retryOnTransient: false },
     );
   },

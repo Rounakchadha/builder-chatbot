@@ -79,17 +79,19 @@ async function throwTracked(path: string, message: string, code: string, detail:
 // error-code list for validatebureau's resendOTP:true path (yesterday's resend fix) returns
 // "OTP_RESEND" on success ("OTP Resent Successfully") — the exact same success-flavored-error
 // pattern as OTP_IDM_Email_Queue, just never added here when that resend code shipped.
-// Bug fixed 2026-11-28 (real prod case, Tara Gupta's PAN, customer_id 52063) — a FOURTH instance of
-// this exact pattern: "OTP_AlternateEmail_Entry_Queue" ("Please select the alternative mobile
-// number") was being treated as a hard failure and handled by asking the customer for an alternate
-// number (see homeLoan.ts's bureauAlternateNumberCorrection step) — but full-envelope logging
-// added the same day to investigate it showed `data` carrying a complete, valid CIBIL
-// questionKey/answerKey/ChallengeConfigGUID/otp_session_id session, identical in shape to a normal
-// CIBIL_QUESTION_QUEUE success. Every "alternate number" retry was very likely generating a fresh
-// valid session we were discarding every time, not genuinely failing — that's also why it
-// "reproduced identically" on retry. The alternate-number-correction flow is kept as a fallback for
-// if this code is ever genuinely returned with no usable data, but should rarely if ever trigger now.
-const SUCCESS_FLAVORED_ERROR_CODES = new Set(['CUST_NOT_EXIST', 'CIBIL_QUESTION_QUEUE', 'OTP_IDM_Email_Queue', 'OTP_RESEND', 'OTP_AlternateEmail_Entry_Queue']);
+// REVERTED 2026-11-28, same day — direct domain confirmation from the user: this code is a genuine
+// "this number isn't CIBIL's number for this PAN" signal (same real-world case as
+// EXPERIAN_WRONG_NUMBER_PATTERN in homeLoan.ts), NOT a success-flavored code like the three above.
+// The `data` payload it carries (a CIBIL questionKey/answerKey/ChallengeConfigGUID/otp_session_id)
+// is a genuine pending session, but any OTP for it would be sent to whatever number CIBIL actually
+// has on file — not necessarily the one we sent — so accepting it as success here would silently
+// strand the customer waiting on an OTP that may never reach the number they gave us. The correct
+// handling (confirmed, 2026-11-28): ask the customer for the alternate number THEY think is linked,
+// then submit it in validatebureau's own `otp` field against this same pending session (not a new
+// generatebureau/updatebureau call with a new phone_number) — see bureauAlternateNumberCorrection
+// in homeLoan.ts. Needs the session's data preserved on the thrown error for that to work, see the
+// throw site below.
+const SUCCESS_FLAVORED_ERROR_CODES = new Set(['CUST_NOT_EXIST', 'CIBIL_QUESTION_QUEUE', 'OTP_IDM_Email_Queue', 'OTP_RESEND']);
 
 // A hung real API call must never hang the whole conversation turn — but 10s was proving too
 // tight for real Bitsflow endpoints (confirmed live, 2026-11-26: create_anacity_lead legitimately
@@ -203,16 +205,19 @@ async function requestOnce<T>(method: 'GET' | 'POST', path: string, body: unknow
   }
 
   if (envelope.error_code && !SUCCESS_FLAVORED_ERROR_CODES.has(envelope.error_code)) {
-    // TEMPORARY, 2026-11-27 — checking whether OTP_AlternateEmail_Entry_Queue (and any other error
-    // code like it) actually carries candidate data (e.g. a list of alternate mobile numbers)
-    // alongside the error_code, which this log line never surfaced before — only error_msg/code/dtl
-    // were ever logged on this branch, so envelope.data/error_dtl's full shape was silently dropped
-    // every time. REMOVE once we know either way for OTP_AlternateEmail_Entry_Queue.
+    // Kept logging the full envelope (added 2026-11-27) — confirmed valuable: this is how we found
+    // OTP_AlternateEmail_Entry_Queue carries a real pending CIBIL session in `data`, not just
+    // error_msg/code/dtl.
     logger.warn(
       { event: 'finfinity_api_error', path, attempt, code: envelope.error_code, msg: envelope.error_msg, rawEnvelope: envelope, durationMs: Date.now() - startedAt },
       'Finfinity API returned an error envelope',
     );
-    return throwTracked(path, envelope.error_msg || 'Finfinity API error', envelope.error_code, redactDetail(envelope.error_dtl));
+    // OTP_AlternateEmail_Entry_Queue specifically needs envelope.data (the pending CIBIL session)
+    // carried through, not error_dtl (empty for this code) — see homeLoan.ts's
+    // bureauAlternateNumberCorrection, which reads it back off this error's `detail` field to
+    // submit the alternate number against the SAME session rather than starting a new one.
+    const detail = envelope.error_code === 'OTP_AlternateEmail_Entry_Queue' ? envelope.data : redactDetail(envelope.error_dtl);
+    return throwTracked(path, envelope.error_msg || 'Finfinity API error', envelope.error_code, detail);
   }
 
   // TEMPORARY, same 2026-11-26 instruction as requestBody above — full response data now logged on

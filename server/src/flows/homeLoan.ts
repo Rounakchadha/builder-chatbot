@@ -160,14 +160,47 @@ interface BureauWrongNumberResult {
 // Added 2026-11-28 — OTP_AlternateEmail_Entry_Queue ("Please select the alternative mobile
 // number") confirmed NOT to be a transient CIBIL hiccup (see CIBIL_FALLBACK_CODES's own comment
 // above): it means Bitsflow has more than one mobile number on file for this PAN and doesn't know
-// which one to use. Unlike EXPERIAN_WRONG_NUMBER_PATTERN above, the error message carries no
-// candidate number to hint at (just the bare message, confirmed via full-envelope logging the same
-// day — no data/error_dtl payload either) — direct instruction, 2026-11-28: just ask the customer
-// which number is linked to their PAN and retry with whatever they type, same mechanism as the
-// wrong-number correction above.
-interface BureauAlternateNumberResult {
+// which one to use. Direct instruction, 2026-11-28: ask the customer which number is linked to
+// their PAN with the bureau, then submit THAT number in validatebureau's own `otp` field against
+// the SAME pending session this error carries (now preserved on the thrown error's `detail` — see
+// finfinityClient.ts's SUCCESS_FLAVORED_ERROR_CODES comment for why this needed special handling,
+// unlike EXPERIAN_WRONG_NUMBER_PATTERN above which has no session to preserve).
+interface PendingCibilSession {
+  bureauAlternateNumberCustomerId: number;
+  bureauAlternateNumberOtpSessionId: string;
+  bureauAlternateNumberQuestionKey: string;
+  bureauAlternateNumberAnswerKey: string;
+  bureauAlternateNumberChallengeGuid: string;
+}
+interface BureauAlternateNumberResult extends PendingCibilSession {
   bureauAlternateNumberNeeded: true;
   [key: string]: unknown;
+}
+
+/** The error's `detail` for OTP_AlternateEmail_Entry_Queue is envelope.data — an array shaped like
+ * generatebureau/updatebureau's own CIBIL success response (see finfinityClient.ts). Parsed
+ * defensively since this shape was only ever confirmed as a side effect of debugging, not a
+ * documented contract — a malformed/missing field here just means "can't offer the alternate-number
+ * flow", not a crash. */
+function parsePendingCibilSession(detail: unknown): PendingCibilSession | null {
+  if (!Array.isArray(detail) || detail.length === 0) return null;
+  const d = detail[0] as Record<string, unknown>;
+  if (
+    typeof d.customer_id !== 'number' ||
+    typeof d.otp_session_id !== 'string' ||
+    typeof d.questionKey !== 'string' ||
+    typeof d.answerKey !== 'string' ||
+    typeof d.ChallengeConfigGUID !== 'string'
+  ) {
+    return null;
+  }
+  return {
+    bureauAlternateNumberCustomerId: d.customer_id,
+    bureauAlternateNumberOtpSessionId: d.otp_session_id,
+    bureauAlternateNumberQuestionKey: d.questionKey,
+    bureauAlternateNumberAnswerKey: d.answerKey,
+    bureauAlternateNumberChallengeGuid: d.ChallengeConfigGUID,
+  };
 }
 type GenerateBureauOutcome =
   | {
@@ -184,10 +217,6 @@ type GenerateBureauOutcome =
 
 function isBureauWrongNumberResult(result: GenerateBureauOutcome): result is BureauWrongNumberResult {
   return 'bureauWrongNumberHint' in result;
-}
-
-function isBureauAlternateNumberResult(result: GenerateBureauOutcome): result is BureauAlternateNumberResult {
-  return 'bureauAlternateNumberNeeded' in result;
 }
 
 /** Shared by triggerBureauRealFound/triggerBureauRealNotFound AND bureauMobileCorrection/
@@ -213,7 +242,19 @@ async function runGenerateBureau(input: Parameters<typeof realBureauApi.generate
       if (match) return { bureauWrongNumberHint: match[1] };
     }
     if (err instanceof FinfinityApiError && err.code === 'OTP_AlternateEmail_Entry_Queue') {
-      return { bureauAlternateNumberNeeded: true };
+      const session = parsePendingCibilSession(err.detail);
+      // No usable session to retry against — can't offer the alternate-number flow at all here,
+      // same as any other real failure.
+      if (session) {
+        return {
+          bureauAlternateNumberNeeded: true,
+          bureauAlternateNumberCustomerId: session.bureauAlternateNumberCustomerId,
+          bureauAlternateNumberOtpSessionId: session.bureauAlternateNumberOtpSessionId,
+          bureauAlternateNumberQuestionKey: session.bureauAlternateNumberQuestionKey,
+          bureauAlternateNumberAnswerKey: session.bureauAlternateNumberAnswerKey,
+          bureauAlternateNumberChallengeGuid: session.bureauAlternateNumberChallengeGuid,
+        };
+      }
     }
     throw err;
   }
@@ -2137,16 +2178,20 @@ export const homeLoanFlow: FlowDefinition = {
         return { mobile: parsed, bureauWrongNumberHint: undefined, ...result };
       },
     },
-    // bureauAlternateNumberNeeded (2026-11-28): see SUCCESS_FLAVORED_ERROR_CODES's own comment in
-    // finfinityClient.ts — OTP_AlternateEmail_Entry_Queue turned out to usually carry a real, usable
-    // CIBIL session, same as CIBIL_QUESTION_QUEUE/OTP_IDM_Email_Queue, so this step should rarely if
-    // ever actually trigger now. Kept as a fallback for if Bitsflow ever returns this code with
-    // genuinely no usable data.
+    // bureauAlternateNumberNeeded (2026-11-28, direct instruction): the alternate number the
+    // customer gives here is NOT a new phone_number for a fresh generateBureau/updatebureau call —
+    // it's submitted in validatebureau's own `otp` field, against the SAME pending session this
+    // error carried (see parsePendingCibilSession/BureauAlternateNumberResult above). This triggers
+    // CIBIL to actually send a real OTP to that number — bureauAlternateNumberOtpPending below then
+    // asks for that real code. Unverified end-to-end yet (the harness blocked a direct raw test of
+    // this call) — built from the confirmed-working resendBureauOtp's call shape, not separately
+    // confirmed itself; watch the first few real attempts closely.
     {
       id: 'bureauAlternateNumberCorrection',
       type: 'mobile',
       progressLabel: 'Verifying identity',
-      isApplicable: (ctx) => realBureauFlowEnabled && !ctx.answers.creditScore && !!ctx.answers.bureauAlternateNumberNeeded && isIndividualPan(ctx.answers.pan as string | undefined),
+      isApplicable: (ctx) =>
+        realBureauFlowEnabled && !ctx.answers.creditScore && !!ctx.answers.bureauAlternateNumberNeeded && !ctx.answers.bureauAlternateNumberOtpPending && isIndividualPan(ctx.answers.pan as string | undefined),
       botMessage: () => "Another mobile number is linked to your PAN with the credit bureau — please enter that number instead.",
       input: () => ({ type: 'mobile' }),
       validate: (value) => {
@@ -2156,21 +2201,66 @@ export const homeLoanFlow: FlowDefinition = {
       },
       onAnswer: async (parsed, ctx) => {
         const a = ctx.answers;
-        const result = await runGenerateBureau({
-          pan: a.pan as string,
-          phoneNumber: parsed as string,
-          officialEmail: a.email as string,
-          pincode: a.pincode as string,
-          applicantTypeKey: mapSegmentToHlEmploymentType(a.segment as string | undefined),
-          token: a.finfinityAccessToken as string,
-        });
-        if (isBureauAlternateNumberResult(result)) {
-          // Same reasoning as bureauMobileCorrection's own repeat-failure case — a second
-          // alternate-number signal in a row for a number the customer just typed themselves means
-          // this needs a human, not another guess.
+        try {
+          await realBureauApi.triggerBureauAlternateNumberOtp({
+            customerId: a.bureauAlternateNumberCustomerId as number,
+            otpSessionId: a.bureauAlternateNumberOtpSessionId as string,
+            phoneNumber: a.mobile as string,
+            questionKey: a.bureauAlternateNumberQuestionKey as string,
+            answerKey: a.bureauAlternateNumberAnswerKey as string,
+            challengeConfigGuid: a.bureauAlternateNumberChallengeGuid as string,
+            alternateNumber: parsed as string,
+            token: a.finfinityAccessToken as string,
+          });
+        } catch (err) {
+          logger.error({ err, event: 'bureau_alternate_number_trigger_failed' }, 'triggerBureauAlternateNumberOtp failed');
           throw new Error("We're still unable to verify this number with the credit bureau. Please contact support to continue.");
         }
-        return { mobile: parsed, bureauAlternateNumberNeeded: undefined, ...result };
+        return { bureauAlternateNumberOtpPending: true, bureauAlternateNumberGivenNumber: parsed };
+      },
+    },
+    {
+      id: 'otpBureauAlternateNumberVerify',
+      type: 'otp',
+      progressLabel: 'Verifying identity',
+      isApplicable: (ctx) => realBureauFlowEnabled && !ctx.answers.creditScore && !!ctx.answers.bureauAlternateNumberOtpPending && isIndividualPan(ctx.answers.pan as string | undefined),
+      botMessage: () => "We've sent a 6-digit code to the alternate number you gave us — enter it here to continue.",
+      input: () => ({ type: 'otp', length: 6 }),
+      validate: (value) => {
+        const v = (value || '').replace(/\s/g, '');
+        if (!/^\d{6}$/.test(v)) return { ok: false, error: 'Enter all 6 digits.' };
+        return { ok: true, parsed: v };
+      },
+      onAnswer: async (parsed, ctx) => {
+        const a = ctx.answers;
+        let pull: BureauPull;
+        try {
+          pull = await realBureauApi.validateBureauCibil({
+            customerId: a.bureauAlternateNumberCustomerId as number,
+            otpSessionId: a.bureauAlternateNumberOtpSessionId as string,
+            phoneNumber: a.mobile as string,
+            questionKey: a.bureauAlternateNumberQuestionKey as string,
+            answerKey: a.bureauAlternateNumberAnswerKey as string,
+            challengeConfigGuid: a.bureauAlternateNumberChallengeGuid as string,
+            otp: parsed as string,
+            token: a.finfinityAccessToken as string,
+          });
+        } catch (err) {
+          logger.error({ err, event: 'bureau_alternate_number_validate_failed' }, 'validatebureau (alternate-number flow) failed');
+          if (err instanceof FinfinityApiError && err.code === 'EXCEEDED_ATTEMPTS') {
+            throw new Error('Too many incorrect attempts. Please start over.');
+          }
+          throw new Error('Incorrect OTP. Please try again.');
+        }
+        void rememberProfile(a.mobile as string, { creditScore: pull.creditScore, bureauSource: pull.source });
+        return {
+          creditScore: pull.creditScore,
+          bureauSource: pull.source,
+          bureauAlternateNumberNeeded: undefined,
+          bureauAlternateNumberOtpPending: undefined,
+          ...(pull.accessToken ? { finfinityAccessToken: pull.accessToken } : {}),
+          ...(pull.refreshToken ? { finfinityRefreshToken: pull.refreshToken } : {}),
+        };
       },
     },
     {
