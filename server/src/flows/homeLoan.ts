@@ -100,19 +100,16 @@ function bureauLabel(source: unknown): string {
 // 'NOT_FOUND' added 2026-11-25 (real prod case, Sparsh's test — Tara Gupta's profile): same "no
 // CIBIL record for this PAN" intent as CIBIL_NOT_FOUND, just a different code string Bitsflow sent
 // this time — without it, this case threw immediately instead of trying Experian next.
-// 'OTP_AlternateEmail_Entry_Queue' added 2026-11-27 (real prod case, Tara Gupta's profile again,
-// customer_id 52017): "Please select the alternative mobile number" — same duplicate-customer-record
-// root cause as the others, just a new code string. We have no documented way to actually submit a
-// chosen mobile number (no field/endpoint for it anywhere in our Bitsflow API docs), so this is the
-// same blind-retry-and-hope treatment as OTP_ALTERNATE_MOBILE, not a real fix — flag to Bitsflow if
-// it keeps failing even after retry.
-const CIBIL_FALLBACK_CODES = new Set([
-  'CIBIL_NOT_FOUND',
-  'NO_HISTORY',
-  'OTP_ALTERNATE_MOBILE',
-  'NOT_FOUND',
-  'OTP_AlternateEmail_Entry_Queue',
-]);
+// 'OTP_AlternateEmail_Entry_Queue' tried here briefly (2026-11-27, Tara Gupta's profile,
+// customer_id 52017) on the assumption it was the same "no usable CIBIL record" signal as the
+// others — confirmed WRONG the same day: retrying just reproduces the identical error every time,
+// not a transient CIBIL hiccup that clears on a second attempt. It means something more
+// fundamental — Bitsflow doesn't know which of several mobile numbers tied to this PAN to use —
+// and needs the customer to actually pick one, not a blind retry. See runGenerateBureau's own
+// handling of this code (bureauAlternateNumberNeeded) and the bureauAlternateNumberCorrection step
+// below for the real fix. Removed from this set so it no longer wastes one extra real paid call
+// retrying something that never helps.
+const CIBIL_FALLBACK_CODES = new Set(['CIBIL_NOT_FOUND', 'NO_HISTORY', 'OTP_ALTERNATE_MOBILE', 'NOT_FOUND']);
 
 // Real prod case, 2026-11-26 (Tanvi's test): Bitsflow sent the SAME "no CIBIL record" intent under
 // error_code 'INVALID_404' this time, with the actual message literally telling the customer to
@@ -159,6 +156,19 @@ interface BureauWrongNumberResult {
   bureauWrongNumberHint: string;
   [key: string]: unknown;
 }
+
+// Added 2026-11-28 — OTP_AlternateEmail_Entry_Queue ("Please select the alternative mobile
+// number") confirmed NOT to be a transient CIBIL hiccup (see CIBIL_FALLBACK_CODES's own comment
+// above): it means Bitsflow has more than one mobile number on file for this PAN and doesn't know
+// which one to use. Unlike EXPERIAN_WRONG_NUMBER_PATTERN above, the error message carries no
+// candidate number to hint at (just the bare message, confirmed via full-envelope logging the same
+// day — no data/error_dtl payload either) — direct instruction, 2026-11-28: just ask the customer
+// which number is linked to their PAN and retry with whatever they type, same mechanism as the
+// wrong-number correction above.
+interface BureauAlternateNumberResult {
+  bureauAlternateNumberNeeded: true;
+  [key: string]: unknown;
+}
 type GenerateBureauOutcome =
   | {
       bureauRealType: 'CIBIL';
@@ -169,15 +179,21 @@ type GenerateBureauOutcome =
       bureauRealChallengeGuid: string;
     }
   | { bureauRealType: 'EXPERIAN'; bureauRealCustomerId: number; bureauRealOtpSessionId: string }
-  | BureauWrongNumberResult;
+  | BureauWrongNumberResult
+  | BureauAlternateNumberResult;
 
 function isBureauWrongNumberResult(result: GenerateBureauOutcome): result is BureauWrongNumberResult {
   return 'bureauWrongNumberHint' in result;
 }
 
-/** Shared by triggerBureauRealFound/triggerBureauRealNotFound AND bureauMobileCorrection (the
- * retry after a wrong-number correction) — same call, same CIBIL→Experian fallback, same
- * wrong-number detection, used from all three places so none of them can drift out of sync. */
+function isBureauAlternateNumberResult(result: GenerateBureauOutcome): result is BureauAlternateNumberResult {
+  return 'bureauAlternateNumberNeeded' in result;
+}
+
+/** Shared by triggerBureauRealFound/triggerBureauRealNotFound AND bureauMobileCorrection/
+ * bureauAlternateNumberCorrection (the retries after a mobile-number correction) — same call, same
+ * CIBIL→Experian fallback, same wrong-number/alternate-number detection, used from all four places
+ * so none of them can drift out of sync. */
 async function runGenerateBureau(input: Parameters<typeof realBureauApi.generateBureau>[0]): Promise<GenerateBureauOutcome> {
   try {
     const resp = await generateBureauWithExperianFallback(input);
@@ -195,6 +211,9 @@ async function runGenerateBureau(input: Parameters<typeof realBureauApi.generate
     if (err instanceof FinfinityApiError && err.code === '404') {
       const match = EXPERIAN_WRONG_NUMBER_PATTERN.exec(err.message);
       if (match) return { bureauWrongNumberHint: match[1] };
+    }
+    if (err instanceof FinfinityApiError && err.code === 'OTP_AlternateEmail_Entry_Queue') {
+      return { bureauAlternateNumberNeeded: true };
     }
     throw err;
   }
@@ -1809,7 +1828,7 @@ export const homeLoanFlow: FlowDefinition = {
       id: 'triggerBureauRealFound',
       type: 'apiFetch',
       progressLabel: 'Verifying identity',
-      isApplicable: (ctx) => ctx.answers.dedupeFound === true && !ctx.answers.creditScore && realBureauFlowEnabled && !ctx.answers.bureauWrongNumberHint && isIndividualPan(ctx.answers.pan as string | undefined),
+      isApplicable: (ctx) => ctx.answers.dedupeFound === true && !ctx.answers.creditScore && realBureauFlowEnabled && !ctx.answers.bureauWrongNumberHint && !ctx.answers.bureauAlternateNumberNeeded && isIndividualPan(ctx.answers.pan as string | undefined),
       botMessage: () => null,
       input: () => ({ type: 'none' }),
       onAnswer: async (_parsed, ctx) => {
@@ -1881,7 +1900,7 @@ export const homeLoanFlow: FlowDefinition = {
       id: 'bureauMobileCorrection',
       type: 'mobile',
       progressLabel: 'Verifying identity',
-      isApplicable: (ctx) => realBureauFlowEnabled && !ctx.answers.creditScore && !!ctx.answers.bureauWrongNumberHint && isIndividualPan(ctx.answers.pan as string | undefined),
+      isApplicable: (ctx) => realBureauFlowEnabled && !ctx.answers.creditScore && !!ctx.answers.bureauWrongNumberHint && !ctx.answers.bureauAlternateNumberNeeded && isIndividualPan(ctx.answers.pan as string | undefined),
       botMessage: (ctx) => `The mobile number on file with the credit bureau looks different from what you gave us (it ends in ${ctx.answers.bureauWrongNumberHint}) — what's the correct number?`,
       input: () => ({ type: 'mobile' }),
       validate: (value) => {
@@ -1909,10 +1928,41 @@ export const homeLoanFlow: FlowDefinition = {
       },
     },
     {
+      id: 'bureauAlternateNumberCorrection',
+      type: 'mobile',
+      progressLabel: 'Verifying identity',
+      isApplicable: (ctx) => realBureauFlowEnabled && !ctx.answers.creditScore && !!ctx.answers.bureauAlternateNumberNeeded && isIndividualPan(ctx.answers.pan as string | undefined),
+      botMessage: () => "Another mobile number is linked to your PAN with the credit bureau — please enter that number instead.",
+      input: () => ({ type: 'mobile' }),
+      validate: (value) => {
+        const v = (value || '').trim();
+        if (!/^[6-9]\d{9}$/.test(v)) return { ok: false, error: 'Enter a valid 10-digit mobile number.' };
+        return { ok: true, parsed: v };
+      },
+      onAnswer: async (parsed, ctx) => {
+        const a = ctx.answers;
+        const result = await runGenerateBureau({
+          pan: a.pan as string,
+          phoneNumber: parsed as string,
+          officialEmail: a.email as string,
+          pincode: a.pincode as string,
+          applicantTypeKey: mapSegmentToHlEmploymentType(a.segment as string | undefined),
+          token: a.finfinityAccessToken as string,
+        });
+        if (isBureauAlternateNumberResult(result)) {
+          // Same reasoning as bureauMobileCorrection's own repeat-failure case — a second
+          // alternate-number signal in a row for a number the customer just typed themselves means
+          // this needs a human, not another guess.
+          throw new Error("We're still unable to verify this number with the credit bureau. Please contact support to continue.");
+        }
+        return { mobile: parsed, bureauAlternateNumberNeeded: undefined, ...result };
+      },
+    },
+    {
       id: 'otpBureauRealFound',
       type: 'otp',
       progressLabel: 'Verifying identity',
-      isApplicable: (ctx) => ctx.answers.dedupeFound === true && !ctx.answers.creditScore && realBureauFlowEnabled && !ctx.answers.bureauWrongNumberHint && isIndividualPan(ctx.answers.pan as string | undefined),
+      isApplicable: (ctx) => ctx.answers.dedupeFound === true && !ctx.answers.creditScore && realBureauFlowEnabled && !ctx.answers.bureauWrongNumberHint && !ctx.answers.bureauAlternateNumberNeeded && isIndividualPan(ctx.answers.pan as string | undefined),
       botMessage: (ctx) => `We've sent a 6-digit code to +91 ${maskMobile(ctx.answers.mobile as string)} — entering it gives us your consent to pull your credit bureau report.`,
       input: () => ({ type: 'otp', length: 6 }),
       validate: (value) => {
@@ -2043,7 +2093,7 @@ export const homeLoanFlow: FlowDefinition = {
       id: 'triggerBureauRealNotFound',
       type: 'apiFetch',
       progressLabel: 'Verifying identity',
-      isApplicable: (ctx) => ctx.answers.dedupeFound === false && realBureauFlowEnabled && !ctx.answers.bureauWrongNumberHint && isIndividualPan(ctx.answers.pan as string | undefined),
+      isApplicable: (ctx) => ctx.answers.dedupeFound === false && realBureauFlowEnabled && !ctx.answers.bureauWrongNumberHint && !ctx.answers.bureauAlternateNumberNeeded && isIndividualPan(ctx.answers.pan as string | undefined),
       botMessage: () => null,
       input: () => ({ type: 'none' }),
       onAnswer: async (_parsed, ctx) => {
@@ -2061,7 +2111,7 @@ export const homeLoanFlow: FlowDefinition = {
       id: 'otpBureauRealNotFound',
       type: 'otp',
       progressLabel: 'Verifying identity',
-      isApplicable: (ctx) => ctx.answers.dedupeFound === false && realBureauFlowEnabled && !ctx.answers.bureauWrongNumberHint && isIndividualPan(ctx.answers.pan as string | undefined),
+      isApplicable: (ctx) => ctx.answers.dedupeFound === false && realBureauFlowEnabled && !ctx.answers.bureauWrongNumberHint && !ctx.answers.bureauAlternateNumberNeeded && isIndividualPan(ctx.answers.pan as string | undefined),
       botMessage: (ctx) => `We've sent a 6-digit code to +91 ${maskMobile(ctx.answers.mobile as string)} — entering it gives us your consent to pull your credit bureau report.`,
       input: () => ({ type: 'otp', length: 6 }),
       validate: (value) => {
